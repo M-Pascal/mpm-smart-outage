@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%; /* #F8FAFC */
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 221 83% 53%; /* #2563EB */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 32% 94%;
+    --secondary-foreground: 222 47% 18%;
+    --muted: 214 32% 95%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 214 40% 94%;
+    --accent-foreground: 222 47% 15%;
+    --destructive: 0 84% 60%; /* #EF4444 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 28% 89%;
+    --input: 214 28% 85%;
+    --ring: 221 83% 53%;
+    --radius: 0.75rem;
+    --sidebar: 222 47% 11%; /* #0F172A */
+    --sidebar-foreground: 214 32% 91%;
+    --sidebar-muted: 215 20% 65%;
+    --sidebar-accent: 222 40% 18%;
+    --success-soft: 152 76% 94%;
+    --warning-soft: 48 96% 92%;
+    --danger-soft: 0 86% 96%;
+    --brand-soft: 214 95% 95%;
+    --chart-grid: #e2e8f0;
+    --chart-axis: #64748b;
+    color-scheme: light;
+  }
+
+  .dark {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 96%;
+    --card: 222 40% 9%;
+    --card-foreground: 210 40% 96%;
+    --popover: 222 40% 10%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 8%;
+    --secondary: 222 30% 16%;
+    --secondary-foreground: 210 40% 92%;
+    --muted: 222 30% 14%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 222 30% 16%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 222 25% 18%;
+    --input: 222 25% 22%;
+    --ring: 217 91% 60%;
+    --sidebar: 222 50% 5%;
+    --sidebar-foreground: 214 32% 91%;
+    --sidebar-muted: 215 20% 60%;
+    --sidebar-accent: 222 35% 13%;
+    --success-soft: 160 60% 12%;
+    --warning-soft: 38 70% 12%;
+    --danger-soft: 0 55% 14%;
+    --brand-soft: 221 60% 16%;
+    --chart-grid: #1e293b;
+    --chart-axis: #94a3b8;
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-border;
+  }
+}
