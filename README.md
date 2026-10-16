@@ -4,12 +4,16 @@
 
 PowerChat is an outage management and customer communication prototype for mini-grid operators, designed to integrate with MicroPowerManager (MPM). Its main purpose is to **warn customers before planned interruptions** such as maintenance, upgrades and load shedding. It also **detects unexpected outages** from smart-meter readings and helps operators respond.
 
-> **Prototype status.** Meters, customers and locations are fictional. WhatsApp messages are **simulated**: no real phone is ever contacted. PowerChat is **not connected to MPM or to the WhatsApp Business Cloud API**. Both integrations are prepared but unverified (see [Not yet implemented](#not-yet-implemented)).
+> **Status.** PowerChat runs in **mock mode by default**: WhatsApp messages are simulated and no real phone is contacted.
+> The WhatsApp Business Cloud API channel, its webhook, and the MicroPowerManager REST integration are **implemented and tested against mocked services**, but have **not yet been run against Meta or a live MPM instance**.
+> Live sending needs explicit configuration and an allowlist.
+> The demo data (customers, meters, locations) is fictional.
+> How MPM handles notifications today, and why this architecture was chosen: [docs/MPM_WHATSAPP_INTEGRATION.md](docs/MPM_WHATSAPP_INTEGRATION.md).
 
 | Part | Stack | Folder |
 |---|---|---|
 | Web app | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, Recharts, Lucide | [`frontend/`](frontend/) |
-| API, scheduler, detection | Python 3.11+, FastAPI, SQLAlchemy 2, SQLite (PostgreSQL-ready) | [`backend/`](backend/) |
+| API, scheduler, detection, WhatsApp and MPM integration | Python 3.11+, FastAPI, SQLAlchemy 2, Alembic, httpx; SQLite for development, MySQL in production | [`backend/`](backend/) |
 
 ---
 
@@ -17,7 +21,7 @@ PowerChat is an outage management and customer communication prototype for mini-
 
 **Prerequisites:** Python 3.11+, Node.js 18+ (LTS) and VS Code.
 
-1. Open the `powerchat` folder in VS Code (**File → Open Folder…**).
+1. Open the `mpm-smart-outage` folder (this repository) in VS Code (**File → Open Folder…**).
 2. Open a terminal (**Terminal → New Terminal**, PowerShell) and start the API:
    ```powershell
    .\start-backend.ps1
@@ -48,13 +52,32 @@ npm install
 npm run dev
 ```
 
-**Configuration (optional):** copy `backend\.env.example` to `backend\.env`. No credentials are needed for the demo. Secrets are read only by the backend, never by the frontend.
+**Configuration (optional):** copy `backend\.env.example` to `backend\.env`.
+No credentials are needed for the demo.
+Secrets are read only by the backend, never by the frontend.
+The database schema is created and upgraded automatically at startup by Alembic migrations (`backend\migrations`).
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Default SQLite file. Production: `mysql+pymysql://user:pass@host:3306/powerchat` |
+| `WHATSAPP_MODE` | `mock` (default) or `cloud` |
+| `WHATSAPP_LIVE_SEND_ENABLED` | Must be `true` before any real message is sent |
+| `WHATSAPP_ALLOWED_RECIPIENTS` / `WHATSAPP_ALLOWLIST_DISABLED` | Only listed numbers receive live messages unless the allowlist is disabled |
+| `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID` | WhatsApp Cloud API credentials |
+| `WHATSAPP_VERIFY_TOKEN`, `META_APP_SECRET` | Webhook handshake and `X-Hub-Signature-256` verification |
+| `WHATSAPP_API_VERSION`, `WHATSAPP_TEMPLATE_LANGUAGE` | Default `v26.0` (current Graph API version) and `en` |
+| `MPM_BASE_URL`, `MPM_EMAIL`, `MPM_PASSWORD` | MPM service account (REST API, JWT) |
+| `MPM_DEFAULT_COUNTRY_CODE`, `MPM_SMS_ENABLED`, `MPM_SYNC_INTERVAL_MINUTES` | Phone normalisation, SMS through MPM, periodic sync |
+| `TELEMETRY_API_KEY` | Enables `POST /api/telemetry/readings` |
+
+Setup steps for the WhatsApp Cloud API and MPM: [docs/MPM_WHATSAPP_INTEGRATION.md](docs/MPM_WHATSAPP_INTEGRATION.md#5-configure-the-whatsapp-business-cloud-api).
 
 ### Tests
 
 ```powershell
 cd backend
-.\.venv\Scripts\python -m pytest -q    # 32 tests: detection, scheduling, the three demo scenarios, API
+.\.venv\Scripts\python -m pytest -q    # 70 tests: detection, scheduling, demo scenarios, API, channels,
+                                       # delivery/retries, webhook, MPM client/sync, telemetry
 cd ..\frontend
 npm run build                          # TypeScript type-check and production build
 ```
@@ -82,7 +105,7 @@ Click **Guided demo** (amber button, bottom left). Every step performs a real ba
 1. Reset to normal supply.
 2. **Simulate voltage loss** in Sector D.
 3. A **potential** incident appears after consecutive near-zero readings.
-4. **Collect confirming readings.** The incident is auto-confirmed after the verification period, and a simulated *Unexpected outage* WhatsApp alert is sent.
+4. **Collect readings & verify.** More near-zero readings arrive, and the operator verifies (confirms) the incident. Only then is the simulated *Unexpected outage* WhatsApp alert sent. Automatic confirmation exists but is off by default.
 5. **Restore power.** The incident closes internally **without** a customer message. An optional restoration announcement is suggested because many customers were affected.
 
 ### Scenario C: rescheduling
@@ -101,11 +124,11 @@ Click **Guided demo** (amber button, bottom left). Every step performs a real ba
 |---|---|
 | **Overview** | Six summary cards, consumption and voltage charts (1 h / 6 h / 24 h / 7 d), upcoming maintenance with notification status, active incidents, recent activity. All are computed from backend data and refresh automatically. |
 | **Scheduled outages** | Create (draft or publish), edit, reschedule, cancel. Validation covers end after start, start in the future, areas within the chosen mini-grid, and a 7-day maximum. Reminder options are 24 h, 6 h, 1 h or custom, with an exact send-time preview. An advance warning is **never** scheduled or sent after the start. Changing the start time recalculates pending reminders automatically. Rescheduling or cancelling an announced event sends an update. A month calendar shows status colours. Each event has a notification timeline. |
-| **Unexpected outage detection** | Simulated meters report voltage, current, power and connection status. Configurable rules use consecutive readings, a verification period, hysteresis on restore, and a minimum number of meters for an area outage. A **single meter never triggers a community-wide alert**. **Missing data is classified as a communication problem**, not an outage. Voltage loss in an area under an in-progress planned outage raises no incident. |
+| **Unexpected outage detection** | Simulated meters, or real MPM meters through `POST /api/telemetry/readings`, report voltage, current and power. Configurable rules use consecutive readings, hysteresis on restore, and a minimum number of meters for an area outage. A **single meter never triggers a community-wide alert**. One missing reading is never an outage. Many meters going silent together create a **communication-loss** incident that always needs operator verification. **Customers are alerted only after verification.** Voltage loss in an area under an in-progress planned outage raises no incident. |
 | **Incident management** | Acknowledge, investigate, confirm (manual or automatic), reject, resolve. Severity is calculated, and affected customers are estimated (some customers have no smart meter). A chronological timeline and the notification history are shown. Operators can send an extended outage update with an ETA. A restoration announcement is **optional and operator-initiated**. |
-| **Notifications** | Queue, history and per-recipient message log; compose with recipients by service area; send now, schedule or draft; live preview; cancel; retry failed messages; editable templates with placeholders. Statuses are Draft, Scheduled, Processing, Simulated sent, Failed and Cancelled. A message is **never labelled "delivered"**. |
+| **Notifications** | Queue, history, per-recipient message log and a **Failed** view. Compose with recipients by service area; send now, schedule or draft; live preview; cancel; operator retry. Each message shows its channel (WhatsApp, or SMS through MPM), provider, attempts, provider message ID and delivery timeline (queued → sent → delivered → read, or failed). Delivery statuses come from the WhatsApp webhook; in mock mode they are simulated. Simulated messages are always labelled as simulated. |
 | **WhatsApp Channels** | Generates Channel-ready public text with no names or numbers, for the operator to copy and post manually. No unofficial automation is used. |
-| **Customers** | Search, filter, add, edit and view, with consent, preference, account status and linked meter. Only active customers who have opted in and prefer WhatsApp are messaged. |
+| **Customers** | Search, filter, add, edit and view, with consent (and how it was given), preference, account status and linked meter. Customers synced from MPM are marked: their name, phone and area are read-only, since MPM is the source of truth. WhatsApp requires consent; SMS-preference customers are reached through MPM. Replying STOP opts a customer out automatically. |
 | **Power monitoring** | Area health cards, meter table with filters, online and offline devices, incident and planned-outage indicators, and per-meter historical readings. |
 | **Analytics** (labelled simulated) | Planned and unexpected counts, durations, detection and confirmation time, notification preparation time, advance-notice lead time, failure rate, and most-affected areas. |
 | **Settings** | Preferences and time zone, notification timing, detection thresholds, templates, service areas, integration status (read from the environment), and demo controls. |
@@ -116,18 +139,24 @@ Click **Guided demo** (amber button, bottom left). Every step performs a real ba
 ## Architecture
 
 ```
-frontend (React)  ──/api──►  FastAPI routers ──► services ──► SQLAlchemy models ──► SQLite
-                                   ▲                 │
-                  scheduler tick (every 3 s, background task)
-                  1. planned-outage statuses (scheduled → in progress → completed)
-                  2. simulated meter readings → debounced detection → incidents
-                  3. due notification jobs → simulated WhatsApp sending
+                         MicroPowerManager (REST, JWT service account)
+                           ▲ people / cities / mini-grids      ▲ POST /api/sms/storeandsend (SMS customers)
+frontend (React) ──/api──► FastAPI ──► services ──► channels ──┬─► WhatsApp Cloud API (templates) ──► customer
+                              ▲            │                   ├─► MPM SMS
+     WhatsApp webhook ────────┘            ▼                   └─► mock (default)
+     (statuses, STOP/START)    SQLAlchemy + Alembic ──► SQLite (dev) / MySQL (prod)
+                  scheduler tick (every 3 s): planned-outage statuses → simulated readings → detection
+                  → due jobs → due retries → interrupted sends → mock delivery receipts
 ```
 
-- **Persistent scheduling with no duplicate sends.** Notification jobs are rows in the database, so the schedule survives restarts. A job is *claimed* with a conditional `UPDATE … WHERE status='scheduled'`. Each recipient message is protected by `UNIQUE(job_id, customer_id)`, so a job interrupted mid-send resumes without sending duplicates. The detector state is also persisted.
+- **Persistent scheduling with no duplicate sends.**
+  - Jobs, messages and retry times are database rows, so nothing depends on in-memory timers.
+  - Jobs and messages are *claimed* with conditional updates.
+  - Each customer gets at most one message per job (`UNIQUE(job_id, customer_id)`), and provider message IDs are unique.
+  - A send whose outcome is unknown (a timeout after the request left, or a crash) is never retried automatically.
 - **Demo clock.** All backend time comes from `app/clock.py`. The offset is stored in the settings table.
 - **Consistent API format.** Success returns `{"data": …, "meta"?: …}`. Errors return `{"error": {"code", "message", "details": [{field, message}]}}` with status codes 404, 409 (invalid state transition), 422 (validation) and 500.
-- **PostgreSQL later.** Only portable column types are used. Set `DATABASE_URL=postgresql+psycopg://…`, install `psycopg`, and add Alembic migrations.
+- **Database.** SQLite for development; MySQL in production through `DATABASE_URL` (driver `pymysql` included). Alembic migrations live in `backend/migrations` and run at startup.
 
 ```
 backend/app/
@@ -140,8 +169,13 @@ backend/app/
     monitoring.py          meter simulator, detection rules, incident engine
     incidents.py           operator actions
     analytics.py, templates.py, settings_store.py, engine.py (tick), timefmt.py
-  integrations/        mpm.py (REST adapter), whatsapp_cloud.py (Cloud API client). Both inactive.
-  api/                 core.py, outages.py, comms.py (routers)
+    mpm_sync.py            mirror MPM mini-grids, cities, customers and meters (consent untouched)
+    webhooks.py            WhatsApp status callbacks and STOP/START handling
+  channels/            base.py (contract), mock.py, whatsapp_cloud.py, mpm_sms.py, router.py (consent and safety rules)
+  integrations/mpm.py  MicroPowerManager REST client (JWT login, pagination, SMS store-and-send)
+  phone.py             E.164 normalisation and masking
+  api/                 core.py, outages.py, comms.py, integrations.py (routers)
+backend/migrations/    Alembic: 0001 baseline, 0002 delivery tracking and MPM references
   seed.py              fictional demo data (36 customers, 31 meters, 2 mini-grids, 60 days of history)
 frontend/src/
   pages/               Overview, Monitoring, ScheduledOutages (+ OutageForm), Incidents, Customers,
@@ -176,14 +210,29 @@ The full, interactive list is at `/docs`.
 | `GET /api/analytics?days=` | Analytics (simulated) |
 | `GET /api/settings`, `PUT /api/settings/{section}` | Settings |
 | `GET /api/demo/clock`, `POST /api/demo/advance`, `POST /api/demo/reset` | Demo mode |
-| `GET /api/integrations`, `POST /api/integrations/mpm/test` | Integration status |
+| `GET /api/integrations` | WhatsApp mode, live-send state and MPM status (no secrets) |
+| `POST /api/integrations/mpm/test`, `POST /api/integrations/mpm/sync` | Test MPM credentials; sync customers from MPM |
+| `GET /api/webhooks/whatsapp` | Meta webhook verification (`hub.challenge`) |
+| `POST /api/webhooks/whatsapp` | Delivery statuses and STOP/START replies (requires a valid `X-Hub-Signature-256`) |
+| `POST /api/telemetry/readings` | Meter readings for MPM meters (`X-PowerChat-Key`) |
+| `GET /api/templates/{key}/whatsapp` | Template text with `{{1}}…{{n}}` variables, to register in WhatsApp Manager |
+| `GET /api/audience?area_ids=&detail=true` | Which customers an event reaches, their channel, and why others are excluded |
 
 ---
 
-## Not yet implemented
+## Implemented, simulated or pending
 
-- **WhatsApp Business Cloud API.** `integrations/whatsapp_cloud.py` builds template-message requests but is **not wired into sending**. Going live requires template approval in WhatsApp Manager, customer opt-in records, a delivery-status webhook with signature verification, and replacing the simulated outcome in `services/notifications.send_job`.
-- **MPM.** `integrations/mpm.py` is a REST adapter skeleton. Its endpoint paths are placeholders that must be verified against the target MPM version, and no data synchronisation runs. The *Test connection* button only checks reachability. Packaging PowerChat as an MPM Laravel plugin is future work.
-- **SMS.** Customers can prefer SMS, but no SMS channel exists, so they are excluded from messaging.
-- **Production concerns.** There is no authentication or role-based access (a single administrator is assumed), no Alembic migrations, and no message queue. The scheduler runs in the API process, so run a single API instance.
-- **Demo clock caveat.** Moving the demo clock forward and then resetting it leaves some records dated in the "future". Use **Reset demo data** to start clean.
+| Item | Status |
+|---|---|
+| Mock messaging (default) | Implemented |
+| WhatsApp Cloud API channel (templates, retries, idempotency, logging without secrets) | Implemented and tested against a mocked HTTP transport. **Not yet exercised against Meta** |
+| Webhook (verification, signature check, delivery statuses, STOP/START) | Implemented and tested with signed sample payloads. **Not yet registered with Meta** |
+| MPM REST client, customer sync, SMS through MPM | Implemented to MPM's source-code contracts and tested with mocked responses. **Not yet run against a live MPM instance** |
+| Telemetry ingestion for MPM meters | Implemented. **No telemetry producer exists yet**: MPM stores consumption, not voltage |
+| Native MPM plugin (PHP) | Pending by design; see the integration document |
+
+**Known limitations:**
+- **Templates.** WhatsApp templates must be created and approved in WhatsApp Manager before live use; `GET /api/templates/{key}/whatsapp` gives the exact text.
+- **Access control.** There is no authentication or role-based access in PowerChat yet (a single administrator is assumed). Put it behind your network or SSO before deployment.
+- **Scheduler.** It runs inside the API process, so run a single API instance. Database claims prevent duplicates, but there is no separate worker yet.
+- **Demo clock.** Moving the demo clock forward and then resetting it leaves some records dated in the "future". Use **Reset demo data** to start clean.
