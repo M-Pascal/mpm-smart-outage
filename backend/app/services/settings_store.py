@@ -27,7 +27,7 @@ class GeneralSettings(BaseModel):
 
 
 class NotificationSettings(BaseModel):
-    default_reminder_offsets: list[int] = Field(default_factory=lambda: [1440, 60])
+    default_reminder_offsets: list[int] = Field(default_factory=lambda: [1440, 360, 60])
     send_notice_on_publish: bool = True
     auto_notify_unexpected: bool = True
     restoration_min_customers: int = Field(5, ge=0, description="Suggest a restoration announcement at or above this many affected customers")
@@ -49,7 +49,10 @@ class DetectionSettings(BaseModel):
     verification_seconds: int = Field(6, ge=0, le=3600)
     min_meters_for_area_outage: int = Field(2, ge=2, le=50)
     stale_after_seconds: int = Field(20, ge=5, le=86400)
-    auto_confirm: bool = True
+    mpm_stale_after_seconds: int = Field(1800, ge=60, le=7 * 86400)
+    # Off by default: customers are alerted only after an operator verifies the incident.
+    auto_confirm: bool = False
+    comm_loss_ratio: float = Field(0.5, ge=0.1, le=1.0)
     auto_resolve_on_restore: bool = True
 
 

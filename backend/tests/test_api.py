@@ -17,11 +17,12 @@ def test_customer_crud_and_validation(client):
     assert bad.status_code == 422 and bad.json()["error"]["details"][0]["field"] == "phone"
     c = data(client.post("/api/customers", json={"name": "Test User", "phone": "+250700999001", "service_area_id": a,
                                                   "whatsapp_opt_in": True, "create_meter": True}), 201)
-    assert c["meter_serial"] and c["whatsapp_eligible"]
+    assert c["meter_serial"] and c["notifications_eligible"]
     dup = client.post("/api/customers", json={"name": "Other", "phone": "+250700999001", "service_area_id": a})
     assert dup.status_code == 422
     upd = data(client.patch(f"/api/customers/{c['id']}", json={"whatsapp_opt_in": False}))
-    assert upd["whatsapp_eligible"] is False and upd["ineligible_reason"] == "no WhatsApp consent"
+    assert upd["notifications_eligible"] is False and upd["ineligible_reason"] == "no WhatsApp consent"
+    assert upd["source"] == "demo" and upd["notification_channel"] is None
     found = data(client.get("/api/customers?q=Test User"))
     assert [x["id"] for x in found] == [c["id"]]
     assert data(client.get(f"/api/customers/{c['id']}"))["recent_messages"] == []
@@ -36,7 +37,7 @@ def test_manual_notification_draft_schedule_send_cancel(client):
                                                           "context": {"message": "Hello"}, "mode": "draft"}), 201)
     assert draft["status"] == "draft"
     sent = data(client.post("/api/notifications/simulate", json={"job_id": draft["id"]}))
-    assert sent["status"] in ("simulated_sent", "failed") and sent["simulated"]
+    assert sent["status"] in ("sent", "failed") and sent["simulated"]
     past = client.post("/api/notifications", json={"template_key": "general_announcement", "area_ids": [a],
                                                     "mode": "schedule", "send_at": "2020-01-01T00:00:00Z"})
     assert past.status_code == 422
@@ -56,7 +57,7 @@ def test_retry_failed_messages(client):
     assert job["failed_count"] > 0
     client.put("/api/settings/notifications", json={"simulated_failure_rate": 0.0})
     retried = data(client.post(f"/api/notifications/{job['id']}/retry"))
-    assert retried["failed_count"] == 0 and retried["status"] == "simulated_sent"
+    assert retried["failed_count"] == 0 and retried["status"] == "sent"
     assert client.post(f"/api/notifications/{job['id']}/retry").status_code == 409
 
 
@@ -83,7 +84,8 @@ def test_settings_validation(client):
     r = client.put("/api/settings/general", json={"timezone": "Mars/Base"})
     assert r.status_code == 422
     env = data(client.get("/api/settings"))["environment"]
-    assert env["whatsapp"]["connected"] is False and env["mpm"]["connected"] is False
+    assert env["whatsapp"]["mode"] == "mock" and env["whatsapp"]["live_send_enabled"] is False
+    assert env["mpm"]["configured"] is False
     assert data(client.post("/api/integrations/mpm/test"))["ok"] is False
 
 

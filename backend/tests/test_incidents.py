@@ -27,6 +27,8 @@ def test_single_meter_is_not_a_community_alert(client):
 
 
 def test_scenario_b_detect_confirm_notify_restore_without_message(client):
+    # Automatic confirmation is opt-in; this scenario exercises it explicitly.
+    assert client.put("/api/settings/detection", json={"auto_confirm": True}).status_code == 200
     a = area_id(client, "D")
     data(client.post("/api/simulation/outage", json={"scenario": "multi_meter_loss", "service_area_id": a}))
     assert active_incident(client, a) is None  # one bad reading is not enough
@@ -39,9 +41,9 @@ def test_scenario_b_detect_confirm_notify_restore_without_message(client):
     inc = data(client.get(f"/api/incidents/{inc['id']}"))
     assert inc["verification_status"] == "confirmed" and inc["confirmation_method"] == "auto"
     alerts = [n for n in inc["notifications"] if n["kind"] == "outage_alert"]
-    assert len(alerts) == 1 and alerts[0]["status"] in ("simulated_sent", "failed")
+    assert len(alerts) == 1 and alerts[0]["status"] in ("sent", "failed") and alerts[0]["simulated"] is True
     job = data(client.get(f"/api/notifications/{alerts[0]['id']}"))
-    eligible = [c for c in data(client.get(f"/api/customers?area_id={a}")) if c["whatsapp_eligible"]]
+    eligible = [c for c in data(client.get(f"/api/customers?area_id={a}")) if c["notifications_eligible"]]
     assert len(job["messages"]) == len(eligible)
     assert "unexpected electricity interruption" in job["messages"][0]["body"]
     assert inc["estimated_customers"] >= inc["affected_meters"]
@@ -58,14 +60,34 @@ def test_scenario_b_detect_confirm_notify_restore_without_message(client):
     assert client.post(f"/api/incidents/{inc['id']}/announce-restoration").status_code == 409
 
 
-def test_comm_failure_is_not_an_outage(client):
+def test_comm_failure_needs_verification_and_never_alerts_customers(client):
+    client.put("/api/settings/detection", json={"auto_confirm": True})  # even with auto-confirm on
     a = area_id(client, "E")
     data(client.post("/api/simulation/outage", json={"scenario": "comm_failure", "service_area_id": a}))
     advance(client, 40)
+    advance(client, 40)
     meters = data(client.get(f"/api/meters?area_id={a}"))
     assert all(m["status"] == "offline" for m in meters)
-    assert active_incident(client, a) is None
+    inc = data(client.get(f"/api/incidents/{active_incident(client, a)['id']}"))
+    assert inc["evidence_type"] == "communication_loss" and inc["verification_status"] == "potential"
+    assert inc["notifications"] == []
     assert any(e["type"] == "meter_offline" for e in data(client.get("/api/activity?limit=100")))
+    # Meters reconnect with normal voltage: closed as a communication problem, no customer message.
+    data(client.post("/api/simulation/restore", json={"service_area_id": a}))
+    inc = data(client.get(f"/api/incidents/{inc['id']}"))
+    assert inc["resolution_status"] == "resolved" and "communication problem" in inc["resolution_note"]
+    assert inc["notifications"] == []
+
+
+def test_default_requires_operator_verification(client):
+    a = area_id(client, "D")
+    client.post("/api/simulation/outage", json={"scenario": "multi_meter_loss", "service_area_id": a})
+    client.post("/api/simulation/tick")
+    advance(client, 60)
+    inc = data(client.get(f"/api/incidents/{active_incident(client, a)['id']}"))
+    assert inc["verification_status"] == "potential" and inc["notifications"] == []
+    confirmed = data(client.post(f"/api/incidents/{inc['id']}/confirm", json={"notify_customers": True}))
+    assert [n for n in confirmed["notifications"] if n["kind"] == "outage_alert"]
 
 
 def test_manual_confirm_acknowledge_resolve_and_timeline(client):

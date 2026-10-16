@@ -243,7 +243,7 @@ def _already_sent(db: Session, outage: ScheduledOutage, offset: int) -> bool:
     """A reminder already sent for the *current* start time is not re-created."""
     return db.scalar(select(NotificationJob.id).where(
         NotificationJob.scheduled_outage_id == outage.id, NotificationJob.offset_minutes == offset,
-        NotificationJob.status == "simulated_sent",
+        NotificationJob.status == "sent",
         NotificationJob.send_at == outage.start_at - timedelta(minutes=offset))) is not None
 
 

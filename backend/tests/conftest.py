@@ -24,7 +24,7 @@ from app.services import monitoring  # noqa: E402
 def seeded_template() -> Path:
     path = _TMP / "template.db"
     db = Database(f"sqlite:///{path.as_posix()}")
-    db.create_all()
+    db.migrate()
     s = db.SessionLocal()
     seed(s)
     s.close()
@@ -33,17 +33,36 @@ def seeded_template() -> Path:
 
 
 @pytest.fixture
-def client(seeded_template, tmp_path) -> TestClient:
-    target = tmp_path / "test.db"
-    shutil.copy(seeded_template, target)
+def make_client(seeded_template, tmp_path):
+    """Build an app on a fresh copy of the seeded DB with custom Config values and an optional channel router."""
+    created = []
+
+    def factory(router_factory=None, **config_values) -> TestClient:
+        target = tmp_path / f"test{len(created)}.db"
+        shutil.copy(seeded_template, target)
+        CLOCK.set_offset_seconds(0)
+        monitoring.reset_state()
+        monitoring.seed_rng(1)
+        config = Config(database_url=f"sqlite:///{target.as_posix()}", run_scheduler=False, seed_on_startup=False,
+                        **config_values)
+        app = create_app(config, channel_router=router_factory(config) if router_factory else None)
+        test_client = TestClient(app)
+        test_client.__enter__()
+        created.append((test_client, app))
+        return test_client
+
+    yield factory
+    for test_client, app in created:
+        test_client.__exit__(None, None, None)
+        app.state.db.engine.dispose()
     CLOCK.set_offset_seconds(0)
-    monitoring.reset_state()
-    monitoring.seed_rng(1)
-    app = create_app(Config(database_url=f"sqlite:///{target.as_posix()}", run_scheduler=False, seed_on_startup=False))
-    with TestClient(app) as c:
-        yield c
-    app.state.db.engine.dispose()
-    CLOCK.set_offset_seconds(0)
+    from app.channels.router import ChannelRouter, configure
+    configure(ChannelRouter(Config()))
+
+
+@pytest.fixture
+def client(make_client) -> TestClient:
+    return make_client()
 
 
 @pytest.fixture

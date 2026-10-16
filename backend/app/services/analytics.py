@@ -100,11 +100,13 @@ def analytics(db: Session, days: int = 90) -> dict[str, Any]:
             prep.append((min(j.created_at for j in alerts) - i.detected_at).total_seconds())
     lead = []
     for o in planned:
-        notices = [j for j in jobs_by_outage.get(o.id, []) if j.kind == "notice" and j.status == "simulated_sent"]
+        notices = [j for j in jobs_by_outage.get(o.id, []) if j.kind == "notice" and j.status == "sent"]
         if notices and o.status != "cancelled":
             lead.append((o.start_at - min(j.processed_at or j.send_at for j in notices)).total_seconds() / 3600)
 
-    sent = sum(1 for m in msgs if m.status == "simulated_sent")
+    sent = sum(1 for m in msgs if m.status in ("sent", "delivered", "read"))
+    delivered = sum(1 for m in msgs if m.status in ("delivered", "read"))
+    read = sum(1 for m in msgs if m.status == "read")
     failed = sum(1 for m in msgs if m.status == "failed")
 
     area_stats = []
@@ -133,7 +135,10 @@ def analytics(db: Session, days: int = 90) -> dict[str, Any]:
     job_kind = {j.id: j.kind for j in jobs}
     for m in msgs:
         kind = job_kind.get(m.job_id, "other")
-        by_kind[kind]["sent" if m.status == "simulated_sent" else "failed"] += 1
+        if m.status in ("sent", "delivered", "read"):
+            by_kind[kind]["sent"] += 1
+        elif m.status == "failed":
+            by_kind[kind]["failed"] += 1
 
     severity = defaultdict(int)
     for i in real_incidents:
@@ -155,6 +160,10 @@ def analytics(db: Session, days: int = 90) -> dict[str, Any]:
             "avg_advance_notice_hours": _avg(lead),
             "messages_sent": sent,
             "messages_failed": failed,
+            "messages_delivered": delivered,
+            "messages_read": read,
+            "delivery_rate": round(delivered / sent, 4) if sent else 0,
+            "simulated_share": round(sum(1 for m in msgs if m.simulated) / len(msgs), 4) if msgs else 1,
             "failure_rate": round(failed / (sent + failed), 4) if sent + failed else 0,
         },
         "weekly": weeks,

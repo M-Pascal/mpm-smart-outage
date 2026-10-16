@@ -14,7 +14,9 @@ from .models import (
     NotificationJob, NotificationMessage, NotificationTemplate, ScheduledOutage, ServiceArea,
 )
 from .services import monitoring
-from .services.notifications import _simulated_outcome, eligibility
+from .channels.base import OutboundMessage
+from .channels.mock import MockChannel
+from .services.notifications import eligibility
 from .services.templates import DEFAULT_TEMPLATES, render
 from .services.timefmt import fmt_date, fmt_time
 
@@ -135,7 +137,7 @@ def _history_job(db: Session, rng: random.Random, *, kind: str, template_key: st
                  send_at: datetime, ctx: dict, outage: ScheduledOutage | None = None, incident: Incident | None = None,
                  offset: int | None = None) -> NotificationJob:
     job = NotificationJob(kind=kind, template_key=template_key, area_ids=area_ids, send_at=send_at,
-                          status="simulated_sent", scheduled_outage=outage, incident=incident, offset_minutes=offset,
+                          status="sent", simulated=True, scheduled_outage=outage, incident=incident, offset_minutes=offset,
                           created_at=send_at - timedelta(seconds=1), processed_at=send_at,
                           created_by="system", context={})
     db.add(job)
@@ -146,12 +148,20 @@ def _history_job(db: Session, rng: random.Random, *, kind: str, template_key: st
     for c in recips:
         if eligibility(c) is not None:
             continue
-        success, err = _simulated_outcome(job.id, c.id, 1, 0.08)
-        db.add(NotificationMessage(job_id=job.id, customer_id=c.id, phone=c.phone,
-                                   body=render(body, {**ctx, "area": c.service_area.name}),
-                                   status="simulated_sent" if success else "failed", error=err,
-                                   simulated_message_id=f"sim-{job.id}-{c.id}-1" if success else "",
-                                   created_at=send_at, updated_at=send_at))
+        channel = "sms" if c.notification_preference == "sms" else "whatsapp"
+        text = render(body, {**ctx, "area": c.service_area.name})
+        result = MockChannel(channel, 0.08).send(OutboundMessage(
+            to=c.phone, template=template_key, language="en", parameters=[], body=text, reference=f"{job.id}-{c.id}"))
+        success = result.outcome == "accepted"
+        # Historic simulated messages: most were delivered, about a third were also read.
+        status = "failed" if not success else ("read" if (job.id + c.id) % 3 == 0 else "delivered")
+        db.add(NotificationMessage(
+            job_id=job.id, customer_id=c.id, phone=c.phone, body=text, status=status, channel=channel, provider="mock",
+            simulated=True, provider_message_id=result.provider_message_id, attempts=1,
+            error_code=result.error_code, error=result.error_message,
+            sent_at=send_at if success else None, delivered_at=send_at + timedelta(seconds=40) if success else None,
+            read_at=send_at + timedelta(minutes=12) if status == "read" else None,
+            failed_at=None if success else send_at, created_at=send_at, updated_at=send_at))
         sent += success
         failed += not success
     job.recipients_count, job.sent_count, job.failed_count = sent + failed, sent, failed

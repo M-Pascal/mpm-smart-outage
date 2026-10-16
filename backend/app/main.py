@@ -12,7 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .api import comms, core, outages
+from .api import comms, core, integrations, outages
+from .channels.router import ChannelRouter, configure as configure_channels
 from .config import Config
 from .db import WRITE_LOCK, Database
 from .errors import AppError
@@ -24,7 +25,9 @@ log = logging.getLogger("powerchat")
 DESCRIPTION = """
 Outage management and customer communication for mini-grid operators.
 
-* **Simulation only:** meters are simulated and WhatsApp messages are never sent to real phones.
+* **Mock messaging by default:** WhatsApp messages are simulated unless `WHATSAPP_MODE=cloud` and
+  `WHATSAPP_LIVE_SEND_ENABLED=true` are set, and then only to allow-listed, consenting MPM customers.
+* Customers, mini-grids and service areas can be synchronised from MicroPowerManager's REST API.
 * Responses use `{"data": ...}`; errors use `{"error": {"code", "message", "details"}}`.
 * Times are UTC ISO-8601 (`Z`). The demo clock can be moved forward with `/api/demo/advance`.
 """
@@ -32,12 +35,22 @@ Outage management and customer communication for mini-grid operators.
 
 async def _scheduler_loop(app: FastAPI) -> None:
     db_wrapper: Database = app.state.db
+    config: Config = app.state.config
+    last_sync = 0.0
     while True:
-        await asyncio.sleep(app.state.config.tick_seconds)
+        await asyncio.sleep(config.tick_seconds)
         try:
             await asyncio.to_thread(_tick_once, db_wrapper)
         except Exception:  # keep the scheduler alive
             log.exception("scheduler tick failed")
+        if config.mpm_configured and config.mpm_sync_interval_minutes > 0:
+            loop_time = asyncio.get_running_loop().time()
+            if loop_time - last_sync >= config.mpm_sync_interval_minutes * 60:
+                last_sync = loop_time
+                try:
+                    await asyncio.to_thread(_sync_mpm, db_wrapper, config)
+                except Exception:
+                    log.exception("scheduled MPM sync failed")
 
 
 def _tick_once(db_wrapper: Database) -> None:
@@ -49,12 +62,26 @@ def _tick_once(db_wrapper: Database) -> None:
         db.close()
 
 
-def create_app(config: Config | None = None) -> FastAPI:
+def _sync_mpm(db_wrapper: Database, config: Config) -> None:
+    from .integrations.mpm import MpmClient
+    from .services import mpm_sync
+
+    db = db_wrapper.SessionLocal()
+    try:
+        mpm_sync.sync(db, MpmClient(config))
+    finally:
+        db.close()
+
+
+def create_app(config: Config | None = None, channel_router: ChannelRouter | None = None) -> FastAPI:
     config = config or Config.from_env()
+    if config.whatsapp_mode not in ("mock", "cloud"):
+        raise ValueError("WHATSAPP_MODE must be 'mock' or 'cloud'")
+    configure_channels(channel_router or ChannelRouter(config))
     database = Database(config.database_url)
 
     def init_database() -> None:
-        database.create_all()
+        database.migrate()
         db = database.SessionLocal()
         try:
             if config.seed_on_startup and not is_seeded(db):
@@ -69,7 +96,7 @@ def create_app(config: Config | None = None) -> FastAPI:
             monitoring.reset_state()
             from .clock import CLOCK
             CLOCK.set_offset_seconds(0)
-            database.create_all()
+            database.migrate()
             db = database.SessionLocal()
             try:
                 seed(db)
@@ -95,7 +122,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.db = database
     app.state.reset_database = reset_database
     app.add_middleware(CORSMiddleware, allow_origins=config.cors_origins, allow_methods=["*"], allow_headers=["*"])
-    for r in (core.router, outages.router, comms.router):
+    for r in (core.router, outages.router, comms.router, integrations.router):
         app.include_router(r)
 
     @app.exception_handler(AppError)

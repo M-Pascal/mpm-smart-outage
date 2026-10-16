@@ -110,16 +110,28 @@ def _voltage(scenario: str | None) -> float:
     return round(min(241.0, max(221.0, _rng.gauss(230.0, 2.5))), 1)
 
 
+def _apply_reading(db: Session, m: Meter, voltage: float, current: float, kw: float, t: datetime,
+                   cfg: DetectionSettings) -> Transition | None:
+    m.last_voltage, m.last_current, m.last_power_kw, m.last_reading_at = voltage, current, kw, t
+    tr = evaluate(m, voltage, cfg, t)
+    if tr or m.last_persisted_at is None or (t - m.last_persisted_at).total_seconds() >= READING_PERSIST_SECONDS:
+        db.add(MeterReading(meter_id=m.id, ts=t, voltage=voltage, current=current, power_kw=kw))
+        m.last_persisted_at = t
+    return tr
+
+
 def simulate_tick(db: Session, t: datetime) -> list[Transition]:
+    """Generate readings for demo meters only; MPM meters change solely through ingested telemetry."""
     cfg = settings_store.get_section(db, "detection")
     tz = settings_store.get_section(db, "general").timezone
     hour = to_local(t, tz).hour + to_local(t, tz).minute / 60
     planned = scheduled_outages.areas_under_planned_outage(db, t)
     meters = db.scalars(select(Meter).options(selectinload(Meter.customer), selectinload(Meter.service_area))).all()
     transitions: list[Transition] = []
-    changed_areas: set[int] = set()
 
     for m in meters:
+        if m.source != "demo":
+            continue
         scenario = m.sim_scenario or m.service_area.sim_scenario
         if scenario is None and m.service_area_id in planned:
             scenario = "planned_outage"
@@ -131,18 +143,40 @@ def simulate_tick(db: Session, t: datetime) -> list[Transition]:
         if scenario == "low_voltage":
             kw = round(kw * 0.8, 3)
         current = round(kw * 1000 / (v * 0.95), 2) if v >= cfg.outage_voltage_max else 0.0
-        m.last_voltage, m.last_current, m.last_power_kw, m.last_reading_at = v, current, kw, t
-        tr = evaluate(m, v, cfg, t)
+        tr = _apply_reading(db, m, v, current, kw, t, cfg)
         if tr:
             transitions.append(tr)
-            changed_areas.add(m.service_area_id)
-        if tr or m.last_persisted_at is None or (t - m.last_persisted_at).total_seconds() >= READING_PERSIST_SECONDS:
-            db.add(MeterReading(meter_id=m.id, ts=t, voltage=v, current=current, power_kw=kw))
-            m.last_persisted_at = t
 
-    stale_before = t - timedelta(seconds=cfg.stale_after_seconds)
+    return _after_readings(db, meters, transitions, t, cfg)
+
+
+def ingest_readings(db: Session, readings: list[dict], t: datetime) -> dict:
+    """Apply telemetry pushed for MPM meters (voltage required; current and power optional)."""
+    cfg = settings_store.get_section(db, "detection")
+    by_serial = {m.serial: m for m in db.scalars(select(Meter).options(selectinload(Meter.service_area)))}
+    transitions: list[Transition] = []
+    accepted, unknown = 0, []
+    for r in readings:
+        m = by_serial.get(r["meter_serial"])
+        if m is None or m.source != "mpm":
+            unknown.append(r["meter_serial"])
+            continue
+        ts = r.get("timestamp") or t
+        tr = _apply_reading(db, m, float(r["voltage"]), float(r.get("current") or 0), float(r.get("power_kw") or 0), ts, cfg)
+        accepted += 1
+        if tr:
+            transitions.append(tr)
+    _after_readings(db, list(by_serial.values()), transitions, t, cfg)
+    return {"accepted": accepted, "unknown_meter_serials": unknown, "status_changes": len(transitions)}
+
+
+def _after_readings(db: Session, meters: list[Meter], transitions: list[Transition], t: datetime,
+                    cfg: DetectionSettings) -> list[Transition]:
+    changed_areas = {tr.meter.service_area_id for tr in transitions}
     for m in meters:
-        if m.status in ("normal", "low_voltage") and m.last_reading_at is not None and m.last_reading_at < stale_before:
+        # Real meters report far less often than simulated ones, so they get their own silence threshold.
+        stale_after = cfg.stale_after_seconds if m.source == "demo" else cfg.mpm_stale_after_seconds
+        if m.status in ("normal", "low_voltage") and m.last_reading_at is not None                 and m.last_reading_at < t - timedelta(seconds=stale_after):
             transitions.append(Transition(m, m.status, "offline"))
             m.status, m.status_since = "offline", t
             m.pending_status, m.pending_count, m.pending_since = None, 0, None
@@ -233,18 +267,58 @@ def incidents_tick(db: Session, t: datetime) -> None:
             else:
                 _update_incident(db, open_inc, area, affected, scope, t)
             if (open_inc.verification_status == "potential" and open_inc.scope == "area" and cfg.auto_confirm
+                    and open_inc.evidence_type == "voltage"
                     and len(affected) >= cfg.min_meters_for_area_outage
                     and (t - open_inc.detected_at).total_seconds() >= cfg.verification_seconds):
                 notify = settings_store.get_section(db, "notifications").auto_notify_unexpected
                 incidents.confirm(db, open_inc, method="auto", actor="system", notify_customers=notify,
                                   note=f"{len(affected)} of {len(area.meters)} meters without supply for "
                                        f"{int((t - open_inc.detected_at).total_seconds())}s")
+            continue
+
+        offline = [m for m in area.meters if m.status == "offline"]
+        silent_area = (len(offline) >= cfg.min_meters_for_area_outage and area.meters
+                       and len(offline) / len(area.meters) >= cfg.comm_loss_ratio and area.id not in planned)
+        if silent_area:
+            if open_inc is None and rejected_live is None:
+                _create_comm_loss_incident(db, area, offline, t)
+            elif open_inc is not None and open_inc.evidence_type == "communication_loss":
+                open_inc.affected_meter_ids = [m.id for m in offline]
+                open_inc.peak_affected_meters = max(open_inc.peak_affected_meters, len(offline))
+            continue
+
+        if rejected_live is not None:
+            rejected_live.power_restored_at = t
+        if open_inc is None or open_inc.power_restored_at is not None:
+            continue
+        if open_inc.evidence_type == "communication_loss" and open_inc.verification_status == "potential":
+            db.add(IncidentEvent(incident_id=open_inc.id, ts=t, type="evidence",
+                                 message="Meters are reporting again with normal voltage"))
+            incidents.close(db, open_inc, t, note="Meters reconnected with normal supply: treated as a communication "
+                                                  "problem, not a power outage. No customer message sent.")
         else:
-            if rejected_live is not None:
-                rejected_live.power_restored_at = t
-            if open_inc is not None and open_inc.power_restored_at is None:
-                _restored(db, open_inc, cfg, t)
+            _restored(db, open_inc, cfg, t)
     db.flush()
+
+
+def _create_comm_loss_incident(db: Session, area: ServiceArea, offline: list[Meter], t: datetime) -> Incident:
+    """Many meters in one area going silent together can mean an outage (meters lose power) or a network fault."""
+    inc = Incident(service_area_id=area.id, scope="area", evidence_type="communication_loss",
+                   severity=_severity(area, offline, "area"), verification_status="potential", resolution_status="open",
+                   detected_at=t, first_evidence_at=min((m.status_since for m in offline if m.status_since), default=t),
+                   affected_meter_ids=[m.id for m in offline], peak_affected_meters=len(offline),
+                   estimated_customers=_estimate_customers(area, offline), created_at=t)
+    db.add(inc)
+    db.flush()
+    msg = (f"{len(offline)} of {len(area.meters)} meters in {area.name} stopped reporting at the same time: "
+           "possible outage or communication failure")
+    db.add(IncidentEvent(incident_id=inc.id, ts=t, type="detected", message=msg))
+    db.add(IncidentEvent(incident_id=inc.id, ts=t, type="note", message=(
+        "No voltage evidence is available, so this is never confirmed automatically. Verify on site or by phone "
+        "before alerting customers.")))
+    activity.log(db, "outage_detected", f"{incidents.code(inc)}: {msg}", severity="warning", entity_type="incident",
+                 entity_id=inc.id, operator_alert=True, ts=t)
+    return inc
 
 
 def _create_incident(db: Session, area: ServiceArea, affected: list[Meter], scope: str, t: datetime) -> Incident:
@@ -271,6 +345,10 @@ def _create_incident(db: Session, area: ServiceArea, affected: list[Meter], scop
 def _update_incident(db: Session, inc: Incident, area: ServiceArea, affected: list[Meter], scope: str,
                      t: datetime) -> None:
     ids = [m.id for m in affected]
+    if inc.evidence_type == "communication_loss":
+        inc.evidence_type = "voltage"
+        db.add(IncidentEvent(incident_id=inc.id, ts=t, type="evidence",
+                             message="Meters report near-zero voltage: evidence now indicates a power interruption"))
     if inc.power_restored_at is not None:
         inc.power_restored_at = None
         db.add(IncidentEvent(incident_id=inc.id, ts=t, type="supply_lost", message="Supply lost again"))

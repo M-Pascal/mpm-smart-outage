@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -114,7 +114,8 @@ def list_messages(status: Optional[str] = None, q: Optional[str] = None, limit: 
 def get_notification(job_id: int, db: Session = Depends(get_db)):
     job = _job(db, job_id)
     data = S.job(job)
-    data["messages"] = [S.message(m) for m in sorted(job.messages, key=lambda m: m.id)]
+    data["messages"] = [{**S.message(m), "delivery_attempts": [S.delivery_attempt(a) for a in m.delivery_attempts]}
+                        for m in sorted(job.messages, key=lambda m: m.id)]
     data["preview"] = notifications.render_job(db, job) if job.status in ("draft", "scheduled") else None
     return ok(data)
 
@@ -202,6 +203,17 @@ class TemplateIn(BaseModel):
 def list_templates(db: Session = Depends(get_db)):
     return ok([S.template(t) for t in db.scalars(select(NotificationTemplate).order_by(NotificationTemplate.id))],
               placeholders=PLACEHOLDERS)
+
+
+@router.get("/templates/{key}/whatsapp")
+def template_whatsapp_definition(key: str, request: Request, db: Session = Depends(get_db)):
+    """Template text to submit in WhatsApp Manager, with PowerChat placeholders mapped to {{1}}, {{2}}, ..."""
+    tpl = db.scalar(select(NotificationTemplate).where(NotificationTemplate.key == key))
+    if tpl is None:
+        raise not_found("Template", key)
+    definition = notifications.whatsapp_definition(tpl.body)
+    return ok({"name": tpl.key, "language": request.app.state.config.whatsapp_template_language,
+               "category": "UTILITY", **definition})
 
 
 @router.put("/templates/{key}")
@@ -370,6 +382,10 @@ def update_customer(customer_id: int, body: CustomerPatch, db: Session = Depends
     with WRITE_LOCK:
         c = _customer(db, customer_id)
         data = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+        if c.source == "mpm":
+            managed = [f for f in ("name", "phone", "service_area_id") if f in data and data[f] != getattr(c, f)]
+            if managed:
+                raise conflict(f"{', '.join(managed)} of this customer is managed in MicroPowerManager; edit it there")
         if "service_area_id" in data and db.get(ServiceArea, data["service_area_id"]) is None:
             raise invalid("select a valid service area", "service_area_id")
         if "phone" in data and db.scalar(select(Customer).where(Customer.phone == data["phone"], Customer.id != c.id)):
@@ -380,6 +396,7 @@ def update_customer(customer_id: int, body: CustomerPatch, db: Session = Depends
         if c.meter and "service_area_id" in data:
             c.meter.service_area_id = data["service_area_id"]
         if consent_changed:
+            c.consent_source, c.consent_updated_at = "operator", clock_now()
             activity.log(db, "consent_changed", f"WhatsApp consent {'granted' if c.whatsapp_opt_in else 'withdrawn'} "
                          f"for {c.name}", entity_type="customer", entity_id=c.id)
         try:

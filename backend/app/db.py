@@ -1,13 +1,14 @@
 """Database engine and session handling.
 
-SQLite for the prototype. The models only use portable SQLAlchemy types, so
-switching DATABASE_URL to PostgreSQL (postgresql+psycopg://...) works without code
-changes; add Alembic migrations before production use.
+SQLite for local development and tests; MySQL (MPM's database engine) for
+deployment via DATABASE_URL=mysql+pymysql://... . The schema is managed by the
+Alembic migrations in backend/migrations and applied automatically at startup.
 """
 from __future__ import annotations
 
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -16,6 +17,8 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 class Base(DeclarativeBase):
     pass
 
+
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 # Serialises the scheduler tick with API writes that touch the same rows.
 WRITE_LOCK = threading.RLock()
@@ -37,15 +40,42 @@ class Database:
                 cur.close()
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, expire_on_commit=False)
 
-    def create_all(self) -> None:
-        from . import models  # noqa: F401  (register models)
+    def migrate(self) -> None:
+        """Bring the schema to the latest Alembic revision.
 
-        Base.metadata.create_all(self.engine)
+        Databases created before migrations existed (tables present, no alembic_version) are stamped at
+        the baseline first so only the newer revisions run against them.
+        """
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+        from sqlalchemy import inspect
+
+        cfg = AlembicConfig(str(MIGRATIONS_DIR.parent / "alembic.ini"))
+        cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+        tables = set(inspect(self.engine).get_table_names())
+        sqlite = self.engine.dialect.name == "sqlite"
+        with self.engine.connect() as connection:
+            if sqlite:
+                # SQLite ALTERs rebuild tables; FK enforcement must be off, and the pragma only works outside a transaction.
+                connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+                connection.commit()
+            with connection.begin():
+                cfg.attributes["connection"] = connection
+                if tables and "alembic_version" not in tables:
+                    command.stamp(cfg, "0001")
+                command.upgrade(cfg, "head")
+            if sqlite:
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                connection.commit()
 
     def drop_all(self) -> None:
+        from sqlalchemy import text
+
         from . import models  # noqa: F401
 
         Base.metadata.drop_all(self.engine)
+        with self.engine.begin() as connection:
+            connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
     def session(self) -> Iterator[Session]:
         db = self.SessionLocal()

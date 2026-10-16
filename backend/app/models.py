@@ -23,6 +23,9 @@ class MiniGrid(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True)
     district: Mapped[str] = mapped_column(String(120))
     capacity_kw: Mapped[float] = mapped_column(Float, default=0)
+    # "demo" rows are simulated; "mpm" rows mirror a MicroPowerManager mini-grid (MPM stays the source of truth).
+    source: Mapped[str] = mapped_column(String(10), default="demo")
+    mpm_id: Mapped[Optional[int]] = mapped_column(Integer, unique=True, nullable=True)
     service_areas: Mapped[list["ServiceArea"]] = relationship(back_populates="mini_grid", order_by="ServiceArea.code")
 
 
@@ -33,6 +36,8 @@ class ServiceArea(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
     mini_grid_id: Mapped[int] = mapped_column(ForeignKey("mini_grids.id"))
+    source: Mapped[str] = mapped_column(String(10), default="demo")
+    mpm_city_id: Mapped[Optional[int]] = mapped_column(Integer, unique=True, nullable=True)  # MPM cities map to areas
     # Simulation only: forces every meter in the area into a scenario.
     sim_scenario: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
 
@@ -52,6 +57,12 @@ class Customer(TimestampMixin, Base):
     whatsapp_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
     account_status: Mapped[str] = mapped_column(String(20), default="active")  # active | suspended | inactive
     notes: Mapped[str] = mapped_column(Text, default="")
+    # Consent is owned by PowerChat (MPM has no messaging-consent field); record how it last changed.
+    consent_source: Mapped[str] = mapped_column(String(30), default="")
+    consent_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    source: Mapped[str] = mapped_column(String(10), default="demo")
+    mpm_person_id: Mapped[Optional[int]] = mapped_column(Integer, unique=True, nullable=True)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     service_area: Mapped[ServiceArea] = relationship(back_populates="customers")
     meter: Mapped[Optional["Meter"]] = relationship(back_populates="customer", uselist=False)
@@ -75,6 +86,8 @@ class Meter(TimestampMixin, Base):
     pending_since: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     status_since: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     sim_scenario: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    # Only "demo" meters are driven by the simulator; "mpm" meters change only through ingested telemetry.
+    source: Mapped[str] = mapped_column(String(10), default="demo")
 
     service_area: Mapped[ServiceArea] = relationship(back_populates="meters")
     customer: Mapped[Optional[Customer]] = relationship(back_populates="meter")
@@ -144,6 +157,9 @@ class Incident(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     service_area_id: Mapped[int] = mapped_column(ForeignKey("service_areas.id"), index=True)
     scope: Mapped[str] = mapped_column(String(10), default="meter")  # meter | area
+    # voltage: meters report near-zero voltage. communication_loss: meters went silent together, which may be
+    # an outage or a network problem, so it always needs operator verification.
+    evidence_type: Mapped[str] = mapped_column(String(20), default="voltage")
     severity: Mapped[str] = mapped_column(String(10), default="low")  # low | medium | high | critical
     verification_status: Mapped[str] = mapped_column(String(15), default="potential")  # potential | confirmed | rejected
     resolution_status: Mapped[str] = mapped_column(String(15), default="open", index=True)  # open | investigating | resolved
@@ -202,8 +218,9 @@ class NotificationJob(Base):
     context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     send_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     offset_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    # draft | scheduled | processing | simulated_sent | failed | cancelled
+    # draft | scheduled | processing | sent | failed | cancelled ("sent" = handed to the channel provider)
     status: Mapped[str] = mapped_column(String(20), default="scheduled", index=True)
+    simulated: Mapped[bool] = mapped_column(Boolean, default=True)
     recipients_count: Mapped[int] = mapped_column(Integer, default=0)
     sent_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -218,7 +235,7 @@ class NotificationJob(Base):
 
 
 class NotificationMessage(Base):
-    """Per-recipient history. The unique constraint makes duplicate sends impossible."""
+    """Per-recipient delivery record. UNIQUE(job_id, customer_id) and UNIQUE(provider_message_id) prevent duplicates."""
     __tablename__ = "notification_messages"
     __table_args__ = (UniqueConstraint("job_id", "customer_id", name="uq_message_job_customer"),)
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -226,15 +243,55 @@ class NotificationMessage(Base):
     customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
     phone: Mapped[str] = mapped_column(String(20))
     body: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(20))  # simulated_sent | failed
-    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    # queued | sending | retry_scheduled | sent | delivered | read | failed
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    channel: Mapped[str] = mapped_column(String(20), default="whatsapp")  # whatsapp | sms
+    provider: Mapped[str] = mapped_column(String(20), default="mock")  # mock | whatsapp_cloud | mpm_sms
+    simulated: Mapped[bool] = mapped_column(Boolean, default=True)
+    provider_message_id: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str] = mapped_column(String(40), default="")
     error: Mapped[str] = mapped_column(String(300), default="")
-    simulated_message_id: Mapped[str] = mapped_column(String(60), default="")
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
     job: Mapped[NotificationJob] = relationship(back_populates="messages")
     customer: Mapped[Customer] = relationship()
+    delivery_attempts: Mapped[list["DeliveryAttempt"]] = relationship(back_populates="message", cascade="all, delete-orphan",
+                                                                      order_by="DeliveryAttempt.attempt_no")
+
+
+class DeliveryAttempt(Base):
+    """One call to a channel provider. Holds no credentials and no message body."""
+    __tablename__ = "delivery_attempts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("notification_messages.id", ondelete="CASCADE"), index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer)
+    provider: Mapped[str] = mapped_column(String(20))
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    outcome: Mapped[str] = mapped_column(String(20))  # accepted | retryable_error | permanent_error
+    http_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str] = mapped_column(String(40), default="")
+    error_message: Mapped[str] = mapped_column(String(300), default="")
+    provider_message_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    message: Mapped[NotificationMessage] = relationship(back_populates="delivery_attempts")
+
+
+class WebhookEvent(Base):
+    """Processed provider callbacks. UNIQUE(event_key) makes webhook redelivery idempotent."""
+    __tablename__ = "webhook_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20))
+    event_key: Mapped[str] = mapped_column(String(200), unique=True)
+    event_type: Mapped[str] = mapped_column(String(30))  # status | inbound_message
+    summary: Mapped[str] = mapped_column(String(300), default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 # ------------------------------------------------------------ misc / audit

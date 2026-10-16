@@ -33,7 +33,7 @@ def test_create_publish_sends_notice_and_schedules_reminders(client):
     o = data(client.post("/api/outages/scheduled", json=body), 201)
     assert o["status"] == "notification_queued"
     jobs = {j["kind"] + str(j["offset_minutes"] or ""): j for j in o["notifications"]}
-    assert jobs["notice"]["status"] == "simulated_sent" and jobs["notice"]["sent_count"] > 0
+    assert jobs["notice"]["status"] == "sent" and jobs["notice"]["sent_count"] > 0
     start = datetime.fromisoformat(o["start_at"].rstrip("Z"))
     assert datetime.fromisoformat(jobs["reminder1440"]["send_at"].rstrip("Z")) == start - timedelta(hours=24)
     assert datetime.fromisoformat(jobs["reminder60"]["send_at"].rstrip("Z")) == start - timedelta(hours=1)
@@ -45,7 +45,7 @@ def test_notice_respects_consent(client, db):
     notice = next(j for j in o["notifications"] if j["kind"] == "notice")
     detail = data(client.get(f"/api/notifications/{notice['id']}"))
     customers = data(client.get(f"/api/customers?area_id={area_id(client, 'B')}"))
-    eligible = {c["id"] for c in customers if c["whatsapp_eligible"]}
+    eligible = {c["id"] for c in customers if c["notifications_eligible"]}
     assert {m["customer_id"] for m in detail["messages"]} == eligible
     assert len(eligible) < len(customers)  # some customers have no consent / are suspended
     assert all(m["simulated"] for m in detail["messages"])
@@ -87,7 +87,7 @@ def test_scenario_a_time_advance_triggers_reminder_once(client, db):
         if job["status"] != "scheduled":
             break
         client.post("/api/demo/advance", json={"to_next_notification": True})
-    assert job["status"] == "simulated_sent"
+    assert job["status"] == "sent"
     assert "in about 1 hour" in job["messages"][0]["body"]
     count = db.scalar(select(func.count()).select_from(NotificationMessage).where(NotificationMessage.job_id == reminder["id"]))
     # Processing again must not create duplicates.
@@ -122,7 +122,7 @@ def test_scenario_c_reschedule_recalculates_and_announces(client):
     reminders = {j["offset_minutes"]: j for j in updated["notifications"] if j["kind"] == "reminder" and j["status"] == "scheduled"}
     assert datetime.fromisoformat(reminders[1440]["send_at"].rstrip("Z")) == new_start - timedelta(hours=24)
     announcement = data(client.get(f"/api/notifications/{changes['announcement_job_ids'][0]}"))
-    assert announcement["kind"] == "reschedule" and announcement["status"] == "simulated_sent"
+    assert announcement["kind"] == "reschedule" and announcement["status"] == "sent"
     assert "has been rescheduled" in announcement["messages"][0]["body"]
     assert updated["reschedule_count"] == 1
 
@@ -144,7 +144,7 @@ def test_cancel_cancels_pending_and_sends_cancellation(client):
     assert body["data"]["status"] == "cancelled"
     assert body["meta"]["changes"]["pending_cancelled"] == 2
     kinds = {j["kind"]: j["status"] for j in body["data"]["notifications"]}
-    assert kinds["cancellation"] == "simulated_sent"
+    assert kinds["cancellation"] == "sent"
     assert client.post(f"/api/outages/scheduled/{o['id']}/cancel", json={}).status_code == 409
 
 

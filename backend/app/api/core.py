@@ -13,8 +13,8 @@ from ..clock import CLOCK, iso
 from ..clock import now as clock_now
 from ..db import WRITE_LOCK
 from ..errors import AppError, invalid, not_found, ok
-from ..integrations import whatsapp_cloud
-from ..integrations.mpm import MpmAdapter
+from ..channels.router import get_router
+from ..integrations import mpm
 from ..models import (
     ActivityLog, Customer, Incident, Meter, MiniGrid, NotificationJob, ScheduledOutage, ServiceArea,
 )
@@ -397,18 +397,7 @@ def put_settings(section: Literal["general", "notifications", "detection"], valu
 
 
 def _integrations(request: Request) -> dict:
-    config = request.app.state.config
-    return {"whatsapp": whatsapp_cloud.status(config), "mpm": MpmAdapter(config).status()}
-
-
-@router.get("/integrations")
-def integrations(request: Request):
-    return ok(_integrations(request))
-
-
-@router.post("/integrations/mpm/test")
-def test_mpm(request: Request):
-    return ok(MpmAdapter(request.app.state.config).test_connection())
+    return {"whatsapp": get_router().status(), "mpm": mpm.status(request.app.state.config)}
 
 
 # --------------------------------------------------------------- analytics
@@ -418,7 +407,20 @@ def get_analytics(days: int = Query(90, ge=7, le=365), db: Session = Depends(get
 
 
 @router.get("/audience")
-def get_audience(area_ids: str = Query(..., description="Comma-separated service area ids"), db: Session = Depends(get_db)):
+def get_audience(area_ids: str = Query(..., description="Comma-separated service area ids"), detail: bool = False,
+                 db: Session = Depends(get_db)):
     ids = [int(x) for x in area_ids.split(",") if x.strip().isdigit()]
     aud = audience(db, ids)
-    return ok({"eligible": len(aud["eligible"]), "total_in_areas": len(aud["customers"]), "excluded": aud["excluded"]})
+    result = {"eligible": len(aud["eligible"]), "total_in_areas": len(aud["customers"]), "excluded": aud["excluded"]}
+    if detail:
+        router = get_router()
+        rows = []
+        for c in aud["customers"]:
+            route = router.route(c)
+            rows.append({"id": c.id, "name": c.name, "phone": S.mask_phone(c.phone), "service_area_name": c.service_area.name,
+                         "source": c.source, "included": route.excluded_reason is None,
+                         "reason": route.excluded_reason or route.blocked_reason,
+                         "channel": route.channel.channel if route.channel else None,
+                         "simulated": route.channel.simulated if route.channel else None})
+        result["customers"] = rows
+    return ok(result)
