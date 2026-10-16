@@ -4,8 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/table";
-import { JOB_STATUS, METER_STATUS, OUTAGE_STATUS, PRIORITY, RESOLUTION, SEVERITY, VERIFICATION } from "@/lib/constants";
-import type { JobStatus, MeterStatus, OutageStatus, Severity } from "@/lib/types";
+import { JOB_STATUS, MESSAGE_STATUS, METER_STATUS, OUTAGE_STATUS, PRIORITY, RESOLUTION, SEVERITY, VERIFICATION } from "@/lib/constants";
+import type { JobStatus, MessageStatus, MeterStatus, OutageStatus, Severity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
@@ -114,15 +114,28 @@ export const OutageStatusBadge = ({ status }: { status: OutageStatus }) => {
   );
 };
 
-export const JobStatusBadge = ({ status, failed }: { status: JobStatus; failed?: number }) => {
+export const JobStatusBadge = ({ status, failed, simulated = true }: { status: JobStatus; failed?: number; simulated?: boolean }) => {
   const s = JOB_STATUS[status];
   return (
     <span className="inline-flex items-center gap-1">
       <Badge tone={s.tone}>
-        {status === "simulated_sent" && <CheckCheck aria-hidden />}
+        {status === "sent" && <CheckCheck aria-hidden />}
+        {status === "sent" && simulated ? "Simulated sent" : s.label}
+      </Badge>
+      {status === "sent" && !!failed && <Badge tone="danger">{failed} failed</Badge>}
+    </span>
+  );
+};
+
+export const MessageStatusBadge = ({ status, simulated }: { status: MessageStatus; simulated: boolean }) => {
+  const s = MESSAGE_STATUS[status];
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Badge tone={s.tone}>
+        {(status === "delivered" || status === "read") && <CheckCheck aria-hidden />}
         {s.label}
       </Badge>
-      {status === "simulated_sent" && !!failed && <Badge tone="danger">{failed} failed</Badge>}
+      {simulated && <Badge tone="warning" className="px-1.5 text-[10px] uppercase">Simulated</Badge>}
     </span>
   );
 };

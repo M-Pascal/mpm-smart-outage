@@ -3,7 +3,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
 import type {
-  Analytics, Customer, Dashboard, DemoClock, Incident, Job, Message, Meter, MiniGrid, ScheduledOutage, SeriesPoint, ServiceArea, Settings, Template,
+  Analytics, Customer, Dashboard, DemoClock, Incident, Integrations, Job, Message, Meter, MiniGrid, ScheduledOutage, SeriesPoint, ServiceArea, Settings, Template,
 } from "@/lib/types";
 
 const LIVE = 3000;
@@ -48,6 +48,8 @@ export const useCustomer = (id: number | null) =>
 export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: () => api.get<Settings>("/settings") });
 export const useAnalytics = (days: number) =>
   useQuery({ queryKey: ["analytics", days], queryFn: () => api.get<Analytics>(`/analytics?days=${days}`), refetchInterval: 15_000 });
+export const useIntegrations = () =>
+  useQuery({ queryKey: ["integrations"], queryFn: () => api.get<Integrations>("/integrations"), staleTime: 30_000 });
 export const useDemoClock = () => useQuery({ queryKey: ["clock"], queryFn: () => api.get<DemoClock>("/demo/clock"), refetchInterval: 5000 });
 
 /**

@@ -1,4 +1,4 @@
-import type { JobStatus, MeterStatus, OutageStatus, Reason, Severity } from "./types";
+import type { JobStatus, MessageStatus, MeterStatus, OutageStatus, Reason, Severity } from "./types";
 
 type Tone = "neutral" | "brand" | "success" | "warning" | "danger" | "violet" | "muted";
 
@@ -15,10 +15,23 @@ export const JOB_STATUS: Record<JobStatus, { label: string; tone: Tone }> = {
   draft: { label: "Draft", tone: "muted" },
   scheduled: { label: "Scheduled", tone: "brand" },
   processing: { label: "Processing", tone: "violet" },
-  simulated_sent: { label: "Simulated sent", tone: "success" },
+  sent: { label: "Sent", tone: "success" },
   failed: { label: "Failed", tone: "danger" },
   cancelled: { label: "Cancelled", tone: "neutral" },
 };
+
+/** Delivery status of one message. Simulated messages are always labelled as such (never "delivered" alone). */
+export const MESSAGE_STATUS: Record<MessageStatus, { label: string; tone: Tone }> = {
+  queued: { label: "Queued", tone: "muted" },
+  sending: { label: "Sending", tone: "violet" },
+  retry_scheduled: { label: "Retry scheduled", tone: "warning" },
+  sent: { label: "Sent", tone: "brand" },
+  delivered: { label: "Delivered", tone: "success" },
+  read: { label: "Read", tone: "success" },
+  failed: { label: "Failed", tone: "danger" },
+};
+
+export const PROVIDER_LABEL: Record<string, string> = { mock: "Simulator", whatsapp_cloud: "WhatsApp Cloud API", mpm_sms: "MPM SMS" };
 
 export const METER_STATUS: Record<MeterStatus, { label: string; tone: Tone; color: string }> = {
   normal: { label: "Normal", tone: "success", color: "#10B981" },

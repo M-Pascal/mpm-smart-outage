@@ -12,7 +12,8 @@ import { useAction, useMiniGrids, useSettings } from "@/hooks/queries";
 import { api, errorMessage } from "@/lib/api";
 import { PRESET_OFFSETS, REASONS } from "@/lib/constants";
 import { formatDateTime, isoToLocalInput, localDateKey, localInputToIso, offsetLabel } from "@/lib/format";
-import type { PlanPreview, Priority, Reason, ScheduledOutage } from "@/lib/types";
+import type { AudienceRow, PlanPreview, Priority, Reason, ScheduledOutage } from "@/lib/types";
+import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 
 export type FormMode = "create" | "edit" | "reschedule";
@@ -36,6 +37,35 @@ function tomorrowAt(hour: number, plusHours = 0): string {
   const key = localDateKey(new Date(Date.now() + 86400000));
   const h = String(hour + plusHours).padStart(2, "0");
   return `${key}T${h}:00`;
+}
+
+function RecipientList({ areaIds }: { areaIds: number[] }) {
+  const [open, setOpen] = useState(false);
+  const audience = useQuery({
+    queryKey: ["audience", areaIds],
+    queryFn: () => api.get<{ customers: AudienceRow[]; eligible: number; total_in_areas: number }>(`/audience?detail=true&area_ids=${areaIds.join(",")}`),
+    enabled: open && areaIds.length > 0,
+  });
+  if (!areaIds.length) return null;
+  return (
+    <div className="rounded-xl border bg-card">
+      <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium">
+        Affected customers {audience.data && <span className="text-muted-foreground">({audience.data.eligible} of {audience.data.total_in_areas} notified)</span>}
+        <span className="text-xs text-primary">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <ul className="max-h-56 divide-y overflow-y-auto border-t text-xs scrollbar-thin">
+          {audience.isLoading && <li className="p-3 text-muted-foreground">Loading…</li>}
+          {audience.data?.customers.map((c) => (
+            <li key={c.id} className={cn("flex items-center justify-between gap-2 px-3 py-1.5", !c.included && "text-muted-foreground")}>
+              <span className="min-w-0 truncate">{c.name} <span className="font-mono text-[10px]">{c.phone}</span>{c.source === "mpm" && <Badge tone="brand" className="ml-1 px-1 text-[9px]">MPM</Badge>}</span>
+              <span className="shrink-0">{c.included ? <>{c.channel === "sms" ? "SMS" : "WhatsApp"}{c.simulated && " (sim)"}{c.reason && <span className="text-amber-600"> · {c.reason}</span>}</> : c.reason}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export function OutageForm({ open, onOpenChange, mode, outage, preset, onSaved }: {
@@ -356,6 +386,7 @@ export function OutageForm({ open, onOpenChange, mode, outage, preset, onSaved }
                 loading={previewLoading}
                 title={s.title || "Planned interruption"}
               />
+              <RecipientList areaIds={s.area_ids} />
             </aside>
           </div>
         )}

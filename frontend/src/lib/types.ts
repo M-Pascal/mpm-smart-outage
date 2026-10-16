@@ -1,6 +1,7 @@
 export type MeterStatus = "normal" | "low_voltage" | "no_supply" | "offline";
 export type OutageStatus = "draft" | "scheduled" | "notification_queued" | "in_progress" | "completed" | "cancelled";
-export type JobStatus = "draft" | "scheduled" | "processing" | "simulated_sent" | "failed" | "cancelled";
+export type JobStatus = "draft" | "scheduled" | "processing" | "sent" | "failed" | "cancelled";
+export type MessageStatus = "queued" | "sending" | "retry_scheduled" | "sent" | "delivered" | "read" | "failed";
 export type Severity = "low" | "medium" | "high" | "critical";
 export type Reason = "planned_maintenance" | "equipment_replacement" | "network_upgrade" | "load_shedding" | "safety_inspection" | "other";
 export type Priority = "low" | "medium" | "high" | "critical";
@@ -58,8 +59,16 @@ export interface Customer {
   notes: string;
   meter_id: number | null;
   meter_serial: string | null;
-  whatsapp_eligible: boolean;
+  notifications_eligible: boolean;
   ineligible_reason: string | null;
+  notification_channel: "whatsapp" | "sms" | null;
+  delivery_blocked_reason: string | null;
+  phone_valid: boolean;
+  consent_source: string;
+  consent_updated_at: string | null;
+  source: "demo" | "mpm";
+  mpm_person_id: number | null;
+  last_synced_at: string | null;
   created_at: string;
   updated_at: string;
   recent_messages?: Message[];
@@ -79,6 +88,10 @@ export interface Job {
   recipients_count: number;
   sent_count: number;
   failed_count: number;
+  delivered_count: number;
+  read_count: number;
+  pending_count: number;
+  channels: string[];
   note: string;
   created_by: string;
   created_at: string;
@@ -97,10 +110,20 @@ export interface Message {
   service_area_name: string;
   phone: string;
   body: string;
-  status: "simulated_sent" | "failed";
+  status: MessageStatus;
+  channel: "whatsapp" | "sms";
+  provider: "mock" | "whatsapp_cloud" | "mpm_sms";
+  simulated: boolean;
+  provider_message_id: string | null;
   attempts: number;
+  error_code: string;
   error: string;
-  simulated_message_id: string;
+  next_retry_at: string | null;
+  sent_at: string | null;
+  delivered_at: string | null;
+  read_at: string | null;
+  failed_at: string | null;
+  delivery_attempts?: DeliveryAttempt[];
   created_at: string;
   updated_at: string;
 }
@@ -146,6 +169,7 @@ export interface Incident {
   service_area_name: string;
   mini_grid_name: string;
   scope: "meter" | "area";
+  evidence_type: "voltage" | "communication_loss";
   severity: Severity;
   verification_status: "potential" | "confirmed" | "rejected";
   resolution_status: "open" | "investigating" | "resolved";
@@ -210,7 +234,7 @@ export interface Template { id: number; key: string; name: string; category: str
 export interface PreviewResult {
   body: string;
   missing_placeholders: string[];
-  recipients: { eligible: number; total_in_areas: number; excluded: Record<string, number> };
+  recipients: { eligible: number; total_in_areas: number; excluded: Record<string, number>; channels?: Record<string, number> };
 }
 
 export interface PlanItem { kind: "notice" | "reminder"; offset_minutes: number | null; send_at: string; valid: boolean; label: string; reason: string }
@@ -227,10 +251,23 @@ export interface Settings {
   notifications: { default_reminder_offsets: number[]; send_notice_on_publish: boolean; auto_notify_unexpected: boolean; restoration_min_customers: number; simulated_failure_rate: number };
   detection: { outage_voltage_max: number; low_voltage_max: number; restore_voltage_min: number; confirm_readings: number; verification_seconds: number; min_meters_for_area_outage: number; stale_after_seconds: number; auto_confirm: boolean; auto_resolve_on_restore: boolean };
   demo: { clock_offset_seconds: number; auto_tick: boolean };
-  environment: { whatsapp: IntegrationStatus; mpm: IntegrationStatus };
+  environment: { whatsapp: WhatsAppStatus; mpm: MpmStatus };
 }
 
-export interface IntegrationStatus { name: string; configured: boolean; connected: boolean; mode: string; note: string; [k: string]: unknown }
+export interface WhatsAppStatus {
+  name: string; mode: "mock" | "cloud"; live_send_enabled: boolean; configured: boolean; api_version: string; template_language: string;
+  allowlist: string; webhook_verify_token_set: boolean; webhook_signature_check: boolean; note: string;
+}
+export interface MpmStatus {
+  name: string; configured: boolean; base_url: string | null; service_account: string | null; sms_via_mpm: boolean;
+  sync_interval_minutes: number; mode: string; note: string;
+}
+export interface Integrations { whatsapp: WhatsAppStatus; mpm: MpmStatus; webhook_path: string; telemetry_enabled: boolean }
+export interface DeliveryAttempt {
+  attempt_no: number; provider: string; requested_at: string; outcome: "accepted" | "retryable_error" | "permanent_error" | "unknown";
+  http_status: number | null; error_code: string; error_message: string; provider_message_id: string | null;
+}
+export interface AudienceRow { id: number; name: string; phone: string; service_area_name: string; source: string; included: boolean; reason: string | null; channel: string | null; simulated: boolean | null }
 
 export interface DemoClock { now: string; offset_seconds: number; auto_tick: boolean; next_notification: Job | null }
 
@@ -252,6 +289,10 @@ export interface Analytics {
     avg_advance_notice_hours: number | null;
     messages_sent: number;
     messages_failed: number;
+    messages_delivered: number;
+    messages_read: number;
+    delivery_rate: number;
+    simulated_share: number;
     failure_rate: number;
   };
   weekly: { week_start: string; planned: number; unexpected: number }[];

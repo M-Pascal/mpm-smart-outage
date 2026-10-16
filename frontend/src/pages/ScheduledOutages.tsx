@@ -171,14 +171,14 @@ function OutageDetail({ id, onClose, onEdit }: { id: number | null; onClose: () 
                   <ol className="relative space-y-3 border-l pl-5">
                     {o.notifications.map((j) => (
                       <li key={j.id} className="relative">
-                        <span className={cn("absolute -left-[26px] top-1 h-3 w-3 rounded-full border-2 border-card", j.status === "simulated_sent" ? "bg-success" : j.status === "scheduled" ? "bg-primary" : j.status === "failed" ? "bg-danger" : "bg-slate-400")} />
+                        <span className={cn("absolute -left-[26px] top-1 h-3 w-3 rounded-full border-2 border-card", j.status === "sent" ? "bg-success" : j.status === "scheduled" ? "bg-primary" : j.status === "failed" ? "bg-danger" : "bg-slate-400")} />
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <p className="text-sm font-medium">{j.kind_label}{j.offset_minutes ? ` · ${offsetLabel(j.offset_minutes)} before` : ""}</p>
-                          <JobStatusBadge status={j.status} failed={j.failed_count} />
+                          <JobStatusBadge status={j.status} failed={j.failed_count} simulated={j.simulated} />
                         </div>
                         <p className="text-xs text-muted-foreground">
                           {j.status === "scheduled" ? `Sends ${formatDateTime(j.send_at)} (${relative(j.send_at, now)})` : `${formatDateTime(j.processed_at ?? j.send_at)}`}
-                          {" · "}{j.status === "simulated_sent" || j.status === "failed" ? `${j.sent_count}/${j.recipients_count} delivered in simulation` : `${j.recipients_count} recipients`}
+                          {" · "}{j.status === "sent" || j.status === "failed" ? `${j.sent_count}/${j.recipients_count} sent${j.simulated ? " in simulation" : ""} · ${j.delivered_count} delivered` : `${j.recipients_count} recipients`}
                         </p>
                         {j.note && <p className="text-xs italic text-muted-foreground">{j.note}</p>}
                         <Link to={`/notifications?job=${j.id}`} className="text-xs font-medium text-primary hover:underline">View messages</Link>

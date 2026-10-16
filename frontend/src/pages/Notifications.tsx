@@ -6,7 +6,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { copyText } from "@/components/shared/ChannelDialog";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
-import { EmptyState, JobStatusBadge, KeyValue, PageHeader, TableSkeleton } from "@/components/shared";
+import { EmptyState, JobStatusBadge, KeyValue, MessageStatusBadge, PageHeader, TableSkeleton } from "@/components/shared";
 import { WhatsAppPreview, WhatsAppText } from "@/components/shared/WhatsAppPreview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,11 +18,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/menus"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useNow } from "@/hooks/app-context";
-import { useAction, useAreas, useIncidents, useJob, useJobs, useMessages, useScheduled, useTemplates } from "@/hooks/queries";
+import { useAction, useAreas, useIncidents, useIntegrations, useJob, useJobs, useMessages, useScheduled, useTemplates } from "@/hooks/queries";
 import { api, errorMessage } from "@/lib/api";
-import { JOB_STATUS } from "@/lib/constants";
+import { JOB_STATUS, MESSAGE_STATUS, PROVIDER_LABEL } from "@/lib/constants";
 import { formatDateTime, localInputToIso, relative } from "@/lib/format";
-import type { Job, JobStatus, PreviewResult } from "@/lib/types";
+import type { Job, JobStatus, MessageStatus, PreviewResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { TemplateEditor } from "./notifications/TemplateEditor";
 
@@ -187,7 +187,7 @@ function JobDetail({ id, onClose }: { id: number | null; onClose: () => void }) 
         {!j ? <div className="p-6"><TableSkeleton rows={6} cols={2} /></div> : (
           <>
             <div className="border-b p-6 pr-12">
-              <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs text-muted-foreground">{j.code}</span><JobStatusBadge status={j.status} failed={j.failed_count} /><Badge tone="warning">Simulated</Badge></div>
+              <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs text-muted-foreground">{j.code}</span><JobStatusBadge status={j.status} failed={j.failed_count} simulated={j.simulated} />{j.simulated ? <Badge tone="warning">Simulated</Badge> : <Badge tone="brand">Live</Badge>}</div>
               <DialogTitle className="mt-2 text-xl font-semibold">{j.kind_label}</DialogTitle>
               <DialogDescription className="mt-1 text-sm text-muted-foreground">
                 {j.linked ? <Link className="text-primary hover:underline" to={j.linked.type === "incident" ? `/incidents?id=${j.linked.id}` : `/scheduled?id=${j.linked.id}`}>{j.linked.code} · {j.linked.title}</Link> : "Manual announcement"}
@@ -200,8 +200,10 @@ function JobDetail({ id, onClose }: { id: number | null; onClose: () => void }) 
                 <KeyValue label="Service areas">{names(j.area_ids)}</KeyValue>
                 <KeyValue label="Template">{j.template_key.replace(/_/g, " ")}</KeyValue>
                 <KeyValue label="Recipients">{j.recipients_count}</KeyValue>
-                <KeyValue label="Simulated sent">{j.sent_count}</KeyValue>
+                <KeyValue label={j.simulated ? "Sent (simulated)" : "Sent"}>{j.sent_count}{j.pending_count > 0 && <span className="font-normal text-muted-foreground"> · {j.pending_count} pending</span>}</KeyValue>
+                <KeyValue label="Delivered / read">{j.delivered_count} / {j.read_count}</KeyValue>
                 <KeyValue label="Failed">{j.failed_count}</KeyValue>
+                <KeyValue label="Channels">{j.channels.length ? j.channels.join(", ") : "—"}</KeyValue>
               </dl>
               {j.note && <p className="rounded-lg bg-muted/50 p-3 text-sm">{j.note}</p>}
               {j.preview && (
@@ -219,11 +221,32 @@ function JobDetail({ id, onClose }: { id: number | null; onClose: () => void }) 
                         <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
                           <span className="min-w-0"><span className="font-medium">{m.customer_name}</span><span className="ml-2 font-mono text-xs text-muted-foreground">{m.phone}</span></span>
                           <span className="flex items-center gap-2">
+                            <Badge tone="neutral" className="uppercase">{m.channel}</Badge>
                             {m.attempts > 1 && <span className="text-xs text-muted-foreground">attempt {m.attempts}</span>}
-                            {m.status === "simulated_sent" ? <Badge tone="success"><Check /> Simulated sent</Badge> : <Badge tone="danger"><XCircle /> Failed</Badge>}
+                            <MessageStatusBadge status={m.status} simulated={m.simulated} />
                           </span>
                         </summary>
-                        {m.error && <p className="mt-1 text-xs text-destructive">{m.error}</p>}
+                        {m.error && <p className="mt-1 text-xs text-destructive">{m.error_code && <span className="font-mono">[{m.error_code}] </span>}{m.error}</p>}
+                        {m.status === "retry_scheduled" && m.next_retry_at && <p className="mt-1 text-xs text-amber-600">Next attempt {formatDateTime(m.next_retry_at)}</p>}
+                        <ol className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                          <li>Provider: <b className="text-foreground">{PROVIDER_LABEL[m.provider] ?? m.provider}</b></li>
+                          {m.sent_at && <li>Sent {formatDateTime(m.sent_at)}</li>}
+                          {m.delivered_at && <li>Delivered {formatDateTime(m.delivered_at)}</li>}
+                          {m.read_at && <li>Read {formatDateTime(m.read_at)}</li>}
+                          {m.failed_at && <li>Failed {formatDateTime(m.failed_at)}</li>}
+                          {m.provider_message_id && <li className="font-mono">ID {m.provider_message_id}</li>}
+                        </ol>
+                        {!!m.delivery_attempts?.length && (
+                          <ul className="mt-2 space-y-0.5 text-[11px]">
+                            {m.delivery_attempts.map((a) => (
+                              <li key={a.attempt_no} className="flex gap-2">
+                                <span className="text-muted-foreground">#{a.attempt_no} {formatDateTime(a.requested_at)}</span>
+                                <span className={cn("font-medium", a.outcome === "accepted" ? "text-success" : a.outcome === "retryable_error" ? "text-amber-600" : "text-destructive")}>{a.outcome.replace("_", " ")}</span>
+                                {a.error_code && <span className="font-mono text-muted-foreground">{a.error_code}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
                         <div className="mt-2 rounded-lg bg-muted/50 p-2 text-xs leading-relaxed"><WhatsAppText text={m.body} /></div>
                       </details>
                     ))}
@@ -276,8 +299,8 @@ function JobsTable({ jobs, pending, onOpen }: { jobs: Job[]; pending?: boolean; 
                 {formatDateTime(pending ? j.send_at : j.processed_at ?? j.send_at)}
                 {pending && <p className="text-xs text-muted-foreground">{j.status === "draft" ? "not scheduled" : relative(j.send_at, now)}</p>}
               </TableCell>
-              <TableCell className="text-right tabular">{pending ? j.recipients_count : `${j.sent_count} / ${j.recipients_count}`}</TableCell>
-              <TableCell><JobStatusBadge status={j.status} failed={j.failed_count} />{j.note && !pending && <p className="mt-0.5 max-w-[200px] truncate text-[11px] text-muted-foreground" title={j.note}>{j.note}</p>}</TableCell>
+              <TableCell className="text-right tabular">{pending ? j.recipients_count : <>{j.sent_count} / {j.recipients_count}<p className="text-[11px] text-muted-foreground">{j.delivered_count} delivered</p></>}</TableCell>
+              <TableCell><JobStatusBadge status={j.status} failed={j.failed_count} simulated={j.simulated} />{j.note && !pending && <p className="mt-0.5 max-w-[200px] truncate text-[11px] text-muted-foreground" title={j.note}>{j.note}</p>}</TableCell>
               <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                 <div className="flex justify-end gap-1">
                   {pending && <Button size="sm" variant="outline" onClick={() => setAction({ type: "send", job: j })}><Send /> Send now</Button>}
@@ -307,30 +330,31 @@ function JobsTable({ jobs, pending, onOpen }: { jobs: Job[]; pending?: boolean; 
 }
 
 /* ------------------------------------------------------------------ message log */
-function MessageLog() {
+function MessageLog({ initialStatus = "all" }: { initialStatus?: string }) {
   const msgs = useMessages();
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState("all");
+  const [status, setStatus] = useState(initialStatus);
   const list = (msgs.data ?? []).filter((m) => (status === "all" || m.status === status) && (!q || m.customer_name.toLowerCase().includes(q.toLowerCase()) || m.service_area_name.toLowerCase().includes(q.toLowerCase())));
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 border-b p-4">
         <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Customer or area" className="w-56 pl-8" aria-label="Search messages" /></div>
-        <Select value={status} onValueChange={setStatus}><SelectTrigger className="w-44" aria-label="Status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All outcomes</SelectItem><SelectItem value="simulated_sent">Simulated sent</SelectItem><SelectItem value="failed">Failed</SelectItem></SelectContent></Select>
-        <span className="ml-auto text-xs text-muted-foreground">Showing the latest {list.length} messages · outcomes are simulated, not real deliveries</span>
+        <Select value={status} onValueChange={setStatus}><SelectTrigger className="w-44" aria-label="Status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All statuses</SelectItem>{(["sent", "delivered", "read", "retry_scheduled", "failed"] as MessageStatus[]).map((st) => <SelectItem key={st} value={st}>{MESSAGE_STATUS[st].label}</SelectItem>)}</SelectContent></Select>
+        <span className="ml-auto text-xs text-muted-foreground">Showing the latest {list.length} messages · simulated messages are marked</span>
       </div>
       <CardContent className="p-0">
         {msgs.isLoading ? <div className="p-4"><TableSkeleton /></div> : !list.length ? <div className="p-6"><EmptyState title="No messages" /></div> : (
           <Table>
-            <TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Recipient</TableHead><TableHead>Area</TableHead><TableHead>Message</TableHead><TableHead>Outcome</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Time</TableHead><TableHead>Recipient</TableHead><TableHead>Area</TableHead><TableHead>Channel</TableHead><TableHead>Message</TableHead><TableHead>Delivery</TableHead></TableRow></TableHeader>
             <TableBody>
               {list.slice(0, 200).map((m) => (
                 <TableRow key={m.id}>
                   <TableCell className="whitespace-nowrap text-xs">{formatDateTime(m.created_at)}</TableCell>
                   <TableCell><p className="text-sm font-medium">{m.customer_name}</p><p className="font-mono text-xs text-muted-foreground">{m.phone}</p></TableCell>
                   <TableCell className="text-sm text-muted-foreground">{m.service_area_name}</TableCell>
+                  <TableCell className="text-xs"><span className="uppercase">{m.channel}</span><p className="text-muted-foreground">{PROVIDER_LABEL[m.provider] ?? m.provider}</p></TableCell>
                   <TableCell className="max-w-md"><p className="line-clamp-2 text-xs text-muted-foreground">{m.body.replace(/\*/g, "")}</p></TableCell>
-                  <TableCell>{m.status === "simulated_sent" ? <Badge tone="success">Simulated sent</Badge> : <Badge tone="danger" title={m.error}>Failed</Badge>}{m.error && <p className="mt-0.5 max-w-[220px] truncate text-[11px] text-destructive">{m.error}</p>}</TableCell>
+                  <TableCell><MessageStatusBadge status={m.status} simulated={m.simulated} />{m.error && <p className="mt-0.5 max-w-[220px] truncate text-[11px] text-destructive" title={m.error}>{m.error}</p>}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -399,15 +423,26 @@ function Channels() {
 }
 
 /* --------------------------------------------------------------------- page */
+function ModeBadge() {
+  const integrations = useIntegrations();
+  const wa = integrations.data?.whatsapp;
+  if (!wa) return null;
+  return wa.live_send_enabled
+    ? <Badge tone="danger" className="ml-1 align-middle">Live WhatsApp sending enabled (allow-listed MPM customers)</Badge>
+    : <Badge tone="warning" className="ml-1 align-middle">Mock mode: no real customer is contacted</Badge>;
+}
+
 export default function Notifications() {
   const [params, setParams] = useSearchParams();
   const jobs = useJobs();
+  const failedMessages = useMessages();
   const [tab, setTab] = useState(params.get("tab") ?? "queue");
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const jobId = params.get("job") ? Number(params.get("job")) : null;
   useEffect(() => { const t = params.get("tab"); if (t) setTab(t); }, [params]);
   const all = jobs.data ?? [];
+  const failedCount = (failedMessages.data ?? []).filter((m) => m.status === "failed").length;
   const pending = all.filter((j) => ["draft", "scheduled", "processing"].includes(j.status)).sort((a, b) => a.send_at.localeCompare(b.send_at));
   const history = all.filter((j) => !["draft", "scheduled", "processing"].includes(j.status) && (status === "all" || j.status === status)
     && (!q || j.kind_label.toLowerCase().includes(q.toLowerCase()) || j.code.toLowerCase().includes(q.toLowerCase()) || (j.linked?.title.toLowerCase().includes(q.toLowerCase()) ?? false)))
@@ -417,13 +452,14 @@ export default function Notifications() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader title="Notifications" description={<>WhatsApp communication for planned and unexpected interruptions. <Badge tone="warning" className="ml-1 align-middle">Simulation: no real customer is contacted</Badge></>}
+      <PageHeader title="Notifications" description={<>WhatsApp (and SMS via MPM) communication for planned and unexpected interruptions. <ModeBadge /></>}
         actions={<Button onClick={() => changeTab("compose")}><PenSquare /> New notification</Button>} />
       <Tabs value={tab} onValueChange={changeTab}>
         <TabsList>
           <TabsTrigger value="queue"><Inbox /> Queue {pending.length > 0 && <Badge tone="brand" className="ml-1 px-1.5">{pending.length}</Badge>}</TabsTrigger>
           <TabsTrigger value="history"><History /> History</TabsTrigger>
           <TabsTrigger value="messages"><ListChecks /> Message log</TabsTrigger>
+          <TabsTrigger value="failed"><XCircle /> Failed {!!failedCount && <Badge tone="danger" className="ml-1 px-1.5">{failedCount}</Badge>}</TabsTrigger>
           <TabsTrigger value="compose"><PenSquare /> Compose</TabsTrigger>
           <TabsTrigger value="templates"><FlaskConical /> Templates</TabsTrigger>
           <TabsTrigger value="channels"><Megaphone /> Channels</TabsTrigger>
@@ -437,13 +473,17 @@ export default function Notifications() {
               <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search notifications" className="w-56 pl-8" aria-label="Search notifications" /></div>
               <Select value={status} onValueChange={setStatus}>
                 <SelectTrigger className="w-44" aria-label="Status"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="all">All outcomes</SelectItem>{(["simulated_sent", "failed", "cancelled"] as JobStatus[]).map((s) => <SelectItem key={s} value={s}>{JOB_STATUS[s].label}</SelectItem>)}</SelectContent>
+                <SelectContent><SelectItem value="all">All outcomes</SelectItem>{(["sent", "failed", "cancelled"] as JobStatus[]).map((s) => <SelectItem key={s} value={s}>{JOB_STATUS[s].label}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <CardContent className="p-0">{jobs.isLoading ? <div className="p-4"><TableSkeleton /></div> : <JobsTable jobs={history} onOpen={open} />}</CardContent>
           </Card>
         </TabsContent>
         <TabsContent value="messages"><MessageLog /></TabsContent>
+        <TabsContent value="failed">
+          <p className="mb-3 text-sm text-muted-foreground">Messages that could not be delivered. Open the notification to retry; customers whose consent was withdrawn are never retried.</p>
+          <MessageLog initialStatus="failed" />
+        </TabsContent>
         <TabsContent value="compose"><Compose onDone={() => changeTab("history")} /></TabsContent>
         <TabsContent value="templates"><TemplateEditor /></TabsContent>
         <TabsContent value="channels"><Channels /></TabsContent>

@@ -57,24 +57,28 @@ function CustomerForm({ open, onOpenChange, customer, onSaved }: { open: boolean
     if (!Object.keys(e).length) save.mutate({ ...f, phone: f.phone.replace(/\s/g, "") });
   };
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((p) => (p ? { ...p, [k]: v } : p));
+  const fromMpm = customer?.source === "mpm";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>{customer ? `Edit ${customer.name}` : "Add customer"}</DialogTitle>
-          <DialogDescription>Only customers with WhatsApp consent, an active account and the WhatsApp preference receive messages.</DialogDescription>
+          <DialogDescription>
+            {fromMpm ? "Name, phone and service area come from MicroPowerManager and are edited there. Consent and notification preference are managed in PowerChat."
+              : "WhatsApp messages require consent and an active account; customers who prefer SMS are reached through MPM."}
+          </DialogDescription>
         </DialogHeader>
         {f && (
           <form className="grid gap-4 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); submit(); }} noValidate>
             <Field label="Full name" htmlFor="c-name" error={errors.name} className="sm:col-span-2">
-              <Input id="c-name" value={f.name} invalid={!!errors.name} onChange={(e) => set("name", e.target.value)} />
+              <Input id="c-name" value={f.name} disabled={fromMpm} invalid={!!errors.name} onChange={(e) => set("name", e.target.value)} />
             </Field>
             <Field label="Phone number" htmlFor="c-phone" error={errors.phone} hint="International (E.164) format">
-              <Input id="c-phone" value={f.phone} invalid={!!errors.phone} onChange={(e) => set("phone", e.target.value)} inputMode="tel" />
+              <Input id="c-phone" value={f.phone} disabled={fromMpm} invalid={!!errors.phone} onChange={(e) => set("phone", e.target.value)} inputMode="tel" />
             </Field>
             <Field label="Service area" htmlFor="c-area" error={errors.service_area_id}>
-              <Select value={f.service_area_id} onValueChange={(v) => set("service_area_id", v)}>
+              <Select value={f.service_area_id} disabled={fromMpm} onValueChange={(v) => set("service_area_id", v)}>
                 <SelectTrigger id="c-area" invalid={!!errors.service_area_id}><SelectValue placeholder="Select area" /></SelectTrigger>
                 <SelectContent>{areas.data?.map((a) => <SelectItem key={a.id} value={String(a.id)}>{a.name}</SelectItem>)}</SelectContent>
               </Select>
@@ -136,15 +140,22 @@ function CustomerDetail({ id, onClose, onEdit }: { id: number | null; onClose: (
               <Button size="sm" variant="outline" className="mt-4" onClick={() => onEdit(c)}><Pencil /> Edit customer</Button>
             </div>
             <div className="space-y-6 p-6">
-              <div className={`flex items-start gap-3 rounded-lg p-3 text-sm ${c.whatsapp_eligible ? "bg-success-soft" : "bg-muted"}`}>
-                {c.whatsapp_eligible ? <ShieldCheck className="mt-0.5 h-4 w-4 text-success" /> : <MessageCircleOff className="mt-0.5 h-4 w-4 text-muted-foreground" />}
-                <p>{c.whatsapp_eligible ? "Included in WhatsApp notifications for this service area." : <>Excluded from WhatsApp notifications: <b>{c.ineligible_reason}</b>.</>}</p>
+              <div className={`flex items-start gap-3 rounded-lg p-3 text-sm ${c.notifications_eligible ? "bg-success-soft" : "bg-muted"}`}>
+                {c.notifications_eligible ? <ShieldCheck className="mt-0.5 h-4 w-4 text-success" /> : <MessageCircleOff className="mt-0.5 h-4 w-4 text-muted-foreground" />}
+                <p>{c.notifications_eligible
+                  ? <>Receives outage notifications by <b>{c.notification_channel === "sms" ? "SMS (through MPM)" : "WhatsApp"}</b>{c.delivery_blocked_reason && <> but delivery is blocked: <b>{c.delivery_blocked_reason}</b></>}.</>
+                  : <>Excluded from notifications: <b>{c.ineligible_reason}</b>.</>}</p>
               </div>
+              {c.source === "mpm" && (
+                <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+                  Synced from MicroPowerManager (person #{c.mpm_person_id}{c.last_synced_at && <>, last sync {formatDateTime(c.last_synced_at)}</>}). Name, phone and area are managed in MPM; consent and notification preference are managed here.
+                </p>
+              )}
               <dl className="grid grid-cols-2 gap-4">
                 <KeyValue label="Phone">{c.phone}</KeyValue>
                 <KeyValue label="Linked meter">{c.meter_serial ?? "No smart meter"}</KeyValue>
                 <KeyValue label="Preference">{PREF_LABEL[c.notification_preference]}</KeyValue>
-                <KeyValue label="WhatsApp consent">{c.whatsapp_opt_in ? "Given" : "Not given"}</KeyValue>
+                <KeyValue label="WhatsApp consent">{c.whatsapp_opt_in ? "Given" : "Not given"}{c.consent_source && <span className="block text-xs font-normal text-muted-foreground">via {c.consent_source.replace("_", " ")}{c.consent_updated_at && `, ${formatDateTime(c.consent_updated_at)}`}</span>}</KeyValue>
                 <KeyValue label="Account">{c.account_status}</KeyValue>
                 <KeyValue label="Customer since">{formatDate(c.created_at)}</KeyValue>
               </dl>
@@ -183,7 +194,7 @@ export default function Customers() {
     const ql = q.toLowerCase();
     return (!ql || c.name.toLowerCase().includes(ql) || c.phone.includes(ql) || c.code.toLowerCase().includes(ql) || (c.meter_serial ?? "").toLowerCase().includes(ql))
       && (area === "all" || String(c.service_area_id) === area)
-      && (consent === "all" || (consent === "eligible" ? c.whatsapp_eligible : consent === "opted_in" ? c.whatsapp_opt_in : !c.whatsapp_opt_in))
+      && (consent === "all" || (consent === "eligible" ? c.notifications_eligible : consent === "opted_in" ? c.whatsapp_opt_in : !c.whatsapp_opt_in))
       && (account === "all" || c.account_status === account);
   }), [data, q, area, consent, account]);
 
@@ -192,7 +203,7 @@ export default function Customers() {
       <PageHeader title="Customer management" description="Customers, linked meters and notification consent." actions={<Button onClick={() => setForm({})}><UserPlus /> Add customer</Button>} />
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Customers" value={data.length} icon={Users} loading={customers.isLoading} />
-        <StatCard label="Reachable on WhatsApp" value={data.filter((c) => c.whatsapp_eligible).length} hint="Consent + active + WhatsApp preference" icon={CheckCircle2} tone="success" loading={customers.isLoading} />
+        <StatCard label="Reachable" value={data.filter((c) => c.notifications_eligible).length} hint={`${data.filter((c) => c.notification_channel === "whatsapp" && c.notifications_eligible).length} WhatsApp · ${data.filter((c) => c.notification_channel === "sms").length} SMS`} icon={CheckCircle2} tone="success" loading={customers.isLoading} />
         <StatCard label="No WhatsApp consent" value={data.filter((c) => !c.whatsapp_opt_in).length} icon={MessageCircleOff} tone="neutral" loading={customers.isLoading} />
         <StatCard label="Without smart meter" value={data.filter((c) => !c.meter_serial).length} icon={Plus} tone="warning" loading={customers.isLoading} />
       </div>
@@ -208,7 +219,7 @@ export default function Customers() {
           </Select>
           <Select value={consent} onValueChange={setConsent}>
             <SelectTrigger className="w-44" aria-label="Consent"><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="all">Any consent</SelectItem><SelectItem value="eligible">WhatsApp reachable</SelectItem><SelectItem value="opted_in">Opted in</SelectItem><SelectItem value="opted_out">Not opted in</SelectItem></SelectContent>
+            <SelectContent><SelectItem value="all">Any consent</SelectItem><SelectItem value="eligible">Reachable</SelectItem><SelectItem value="opted_in">Opted in</SelectItem><SelectItem value="opted_out">Not opted in</SelectItem></SelectContent>
           </Select>
           <Select value={account} onValueChange={setAccount}>
             <SelectTrigger className="w-36" aria-label="Account status"><SelectValue /></SelectTrigger>
@@ -228,7 +239,7 @@ export default function Customers() {
                   <TableHead>Service area</TableHead>
                   <TableHead>Meter</TableHead>
                   <TableHead>Preference</TableHead>
-                  <TableHead>WhatsApp</TableHead>
+                  <TableHead>Notifications</TableHead>
                   <TableHead>Account</TableHead>
                   <TableHead className="w-10"><span className="sr-only">Edit</span></TableHead>
                 </TableRow>
@@ -236,12 +247,12 @@ export default function Customers() {
               <TableBody>
                 {list.map((c) => (
                   <TableRow key={c.id} className="cursor-pointer" onClick={() => setParams({ id: String(c.id) })}>
-                    <TableCell><p className="font-medium">{c.name}</p><p className="text-xs text-muted-foreground"><span className="font-mono">{c.code}</span> · {CUSTOMER_TYPES[c.customer_type]}</p></TableCell>
+                    <TableCell><p className="font-medium">{c.name}</p><p className="text-xs text-muted-foreground"><span className="font-mono">{c.code}</span> · {CUSTOMER_TYPES[c.customer_type]} {c.source === "mpm" ? <Badge tone="brand" className="ml-1 px-1.5 text-[10px]">MPM</Badge> : <Badge tone="muted" className="ml-1 px-1.5 text-[10px]">Demo</Badge>}</p></TableCell>
                     <TableCell className="font-mono text-xs">{c.phone}</TableCell>
                     <TableCell className="text-sm">{c.service_area_name}</TableCell>
                     <TableCell className="font-mono text-xs">{c.meter_serial ?? <span className="font-sans text-muted-foreground">—</span>}</TableCell>
                     <TableCell className="text-sm">{PREF_LABEL[c.notification_preference]}</TableCell>
-                    <TableCell>{c.whatsapp_eligible ? <Badge tone="success"><CheckCircle2 /> Opted in</Badge> : <Badge tone="neutral" title={c.ineligible_reason ?? ""}>{c.whatsapp_opt_in ? c.ineligible_reason : "No consent"}</Badge>}</TableCell>
+                    <TableCell>{c.notifications_eligible ? <Badge tone={c.delivery_blocked_reason ? "warning" : "success"} title={c.delivery_blocked_reason ?? ""}><CheckCircle2 /> {c.notification_channel === "sms" ? "SMS" : "WhatsApp"}</Badge> : <Badge tone="neutral" title={c.ineligible_reason ?? ""}>{c.ineligible_reason}</Badge>}</TableCell>
                     <TableCell><Badge tone={ACCOUNT_TONE[c.account_status]} className="capitalize">{c.account_status}</Badge></TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}><Button variant="ghost" size="icon" aria-label={`Edit ${c.name}`} onClick={() => setForm({ customer: c })}><Pencil /></Button></TableCell>
                   </TableRow>

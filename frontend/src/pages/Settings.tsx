@@ -15,7 +15,7 @@ import { useAction, useAreas, useMiniGrids, useSettings } from "@/hooks/queries"
 import { api } from "@/lib/api";
 import { PRESET_OFFSETS } from "@/lib/constants";
 import { offsetLabel } from "@/lib/format";
-import type { IntegrationStatus, ServiceArea, Settings } from "@/lib/types";
+import type { ServiceArea, Settings } from "@/lib/types";
 import { TemplateEditor } from "./notifications/TemplateEditor";
 
 const TIMEZONES = ["Africa/Kigali", "Africa/Nairobi", "Africa/Lagos", "Africa/Johannesburg", "Africa/Dar_es_Salaam", "Africa/Kampala", "UTC"];
@@ -198,46 +198,74 @@ function Areas() {
   );
 }
 
-function IntegrationCard({ s, icon: Icon, children }: { s: IntegrationStatus; icon: typeof Plug; children?: React.ReactNode }) {
+function StatusRow({ ok, children }: { ok: boolean; children: React.ReactNode }) {
   return (
-    <Card>
-      <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
-        <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted"><Icon className="h-5 w-5" /></div>
-          <div><CardTitle>{s.name}</CardTitle><CardDescription>{s.note}</CardDescription></div>
-        </div>
-        <Badge tone={s.connected ? "success" : "neutral"}>{s.connected ? "Connected" : "Not connected"}</Badge>
-      </CardHeader>
-      <CardContent className="space-y-2 text-sm">
-        <p className="flex items-center gap-2">{s.configured ? <CheckCircle2 className="h-4 w-4 text-success" /> : <XCircle className="h-4 w-4 text-muted-foreground" />} Credentials {s.configured ? "present in environment" : "not configured"}</p>
-        <p className="text-xs text-muted-foreground">Mode: <b>{s.mode.replace("_", " ")}</b>. Secrets are read from backend environment variables (<code>backend/.env</code>) and are never exposed to the browser.</p>
-        {children}
-      </CardContent>
-    </Card>
+    <li className="flex items-start gap-2">
+      {ok ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" /> : <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
+      <span>{children}</span>
+    </li>
   );
 }
 
 function Integrations({ data }: { data?: Settings }) {
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [syncResult, setSyncResult] = useState<Record<string, unknown> | null>(null);
   const test = useAction(() => api.post<{ ok: boolean; message: string }>("/integrations/mpm/test"), { silent: true, onSuccess: setResult });
+  const sync = useAction(() => api.post<Record<string, unknown>>("/integrations/mpm/sync"), {
+    success: "MPM sync finished", onSuccess: setSyncResult,
+  });
   if (!data) return <TableSkeleton rows={3} cols={2} />;
+  const wa = data.environment.whatsapp;
+  const mpm = data.environment.mpm;
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <IntegrationCard s={data.environment.whatsapp} icon={MessageSquare}>
-        <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
-          <li>Env: <code>WHATSAPP_ACCESS_TOKEN</code>, <code>WHATSAPP_PHONE_NUMBER_ID</code>, <code>WHATSAPP_BUSINESS_ACCOUNT_ID</code></li>
-          <li>Templates must be approved in WhatsApp Manager before live use.</li>
-          <li>The prototype only simulates delivery, even when credentials are set.</li>
-        </ul>
-      </IntegrationCard>
-      <IntegrationCard s={data.environment.mpm} icon={Cpu}>
-        <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
-          <li>Env: <code>MPM_BASE_URL</code>, <code>MPM_API_TOKEN</code></li>
-          <li>REST adapter prepared for MPM’s Laravel plugin architecture. The endpoint mapping must be verified.</li>
-        </ul>
-        <Button size="sm" variant="outline" disabled={test.isPending} onClick={() => test.mutate()}>{test.isPending ? <Loader2 className="animate-spin" /> : <Plug />} Test connection</Button>
-        {result && <p className={`text-xs ${result.ok ? "text-success" : "text-destructive"}`}>{result.message}</p>}
-      </IntegrationCard>
+      <Card>
+        <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted"><MessageSquare className="h-5 w-5" /></div>
+            <div><CardTitle>{wa.name}</CardTitle><CardDescription>{wa.note}</CardDescription></div>
+          </div>
+          {wa.live_send_enabled ? <Badge tone="danger">Live sending</Badge> : <Badge tone="warning">Mock mode</Badge>}
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <ul className="space-y-1.5">
+            <StatusRow ok={wa.configured}>Access token and phone number ID {wa.configured ? "configured" : "not configured"}</StatusRow>
+            <StatusRow ok={wa.live_send_enabled}>Live sending {wa.live_send_enabled ? "enabled" : "disabled"} (<code>WHATSAPP_MODE=cloud</code> + <code>WHATSAPP_LIVE_SEND_ENABLED=true</code>)</StatusRow>
+            <StatusRow ok={wa.allowlist !== "disabled"}>Recipient allowlist: {wa.allowlist}</StatusRow>
+            <StatusRow ok={wa.webhook_verify_token_set}>Webhook verify token {wa.webhook_verify_token_set ? "set" : "not set"}</StatusRow>
+            <StatusRow ok={wa.webhook_signature_check}>Webhook signature check (<code>META_APP_SECRET</code>) {wa.webhook_signature_check ? "on" : "off"}</StatusRow>
+          </ul>
+          <p className="text-xs text-muted-foreground">
+            Graph API <b>{wa.api_version}</b> · template language <b>{wa.template_language}</b> · webhook URL: <code>https://&lt;your-host&gt;/api/webhooks/whatsapp</code>.
+            Credentials are read from backend environment variables and never sent to the browser.
+          </p>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted"><Cpu className="h-5 w-5" /></div>
+            <div><CardTitle>{mpm.name}</CardTitle><CardDescription>{mpm.note}</CardDescription></div>
+          </div>
+          <Badge tone={mpm.configured ? "brand" : "neutral"}>{mpm.configured ? "Configured" : "Not configured"}</Badge>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <ul className="space-y-1.5">
+            <StatusRow ok={mpm.configured}>Base URL {mpm.base_url ? <code>{mpm.base_url}</code> : "not set"}{mpm.service_account && <> · service account <code>{mpm.service_account}</code></>}</StatusRow>
+            <StatusRow ok={mpm.sms_via_mpm}>SMS customers {mpm.sms_via_mpm ? "delivered through MPM's SMS gateway" : "simulated (MPM_SMS_ENABLED off)"}</StatusRow>
+            <StatusRow ok={mpm.sync_interval_minutes > 0}>Automatic sync {mpm.sync_interval_minutes > 0 ? `every ${mpm.sync_interval_minutes} min` : "off (manual)"}</StatusRow>
+          </ul>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" disabled={test.isPending} onClick={() => test.mutate()}>{test.isPending ? <Loader2 className="animate-spin" /> : <Plug />} Test connection</Button>
+            <Button size="sm" disabled={!mpm.configured || sync.isPending} onClick={() => sync.mutate()}>{sync.isPending ? <Loader2 className="animate-spin" /> : <RotateCcw />} Sync customers now</Button>
+          </div>
+          {result && <p className={`text-xs ${result.ok ? "text-success" : "text-destructive"}`}>{result.message}</p>}
+          {syncResult && (
+            <pre className="overflow-x-auto rounded-lg bg-muted/60 p-3 text-[11px]">{JSON.stringify(syncResult, null, 2)}</pre>
+          )}
+          <p className="text-xs text-muted-foreground">PowerChat reads mini-grids, cities (service areas) and customers through MPM's REST API and never writes to MPM's database.</p>
+        </CardContent>
+      </Card>
     </div>
   );
 }

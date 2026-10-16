@@ -60,7 +60,7 @@ function IncidentDetail({ id, onClose }: { id: number | null; onClose: () => voi
               <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-xs text-muted-foreground">{inc.code}</span><SeverityBadge severity={inc.severity} /><VerificationBadge status={inc.verification_status} /><ResolutionBadge status={inc.resolution_status} /></div>
               <DialogTitle className="mt-2 text-xl font-semibold">Unexpected outage · {inc.service_area_name}</DialogTitle>
               <DialogDescription className="mt-1 text-sm text-muted-foreground">
-                {inc.mini_grid_name} · {inc.scope === "area" ? "Service-area outage" : "Single-meter event (not community-wide)"} · detected {relative(inc.detected_at, now)}
+                {inc.mini_grid_name} · {inc.evidence_type === "communication_loss" ? "Meters stopped reporting: outage or communication failure?" : inc.scope === "area" ? "Service-area outage" : "Single-meter event (not community-wide)"} · detected {relative(inc.detected_at, now)}
               </DialogDescription>
               <div className="mt-4 flex flex-wrap gap-2">
                 {open && !inc.acknowledged_at && <Button size="sm" variant="outline" disabled={ack.isPending} onClick={() => ack.mutate({})}><Hand /> Acknowledge</Button>}
@@ -74,6 +74,18 @@ function IncidentDetail({ id, onClose }: { id: number | null; onClose: () => voi
               </div>
             </div>
             <div className="space-y-6 p-6">
+              {inc.evidence_type === "communication_loss" && inc.resolution_status !== "resolved" && (
+                <div className="flex gap-3 rounded-lg border border-warning/50 bg-warning-soft p-3 text-sm">
+                  <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  <p>These meters went silent together. That can mean a power outage <b>or</b> a network problem, so PowerChat never confirms it automatically. Check on site or call a customer before confirming and alerting customers.</p>
+                </div>
+              )}
+              {inc.verification_status === "potential" && inc.evidence_type === "voltage" && inc.scope === "area" && inc.resolution_status !== "resolved" && (
+                <div className="flex gap-3 rounded-lg border border-primary/30 bg-brand-soft p-3 text-sm">
+                  <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  <p>Repeated near-zero voltage readings indicate a power interruption. Customers are alerted only after this incident is <b>verified</b>: confirm it once you are satisfied.</p>
+                </div>
+              )}
               {inc.restoration_suggested && (
                 <div className="flex gap-3 rounded-lg border border-primary/30 bg-brand-soft p-3 text-sm">
                   <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
@@ -115,7 +127,7 @@ function IncidentDetail({ id, onClose }: { id: number | null; onClose: () => voi
                     {inc.notifications.map((j) => (
                       <Link key={j.id} to={`/notifications?job=${j.id}`} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm hover:bg-muted/40">
                         <span><span className="font-medium">{j.kind_label}</span><span className="block text-xs text-muted-foreground">{formatDateTime(j.processed_at ?? j.send_at)} · {j.sent_count}/{j.recipients_count} delivered in simulation</span></span>
-                        <JobStatusBadge status={j.status} failed={j.failed_count} />
+                        <JobStatusBadge status={j.status} failed={j.failed_count} simulated={j.simulated} />
                       </Link>
                     ))}
                   </div>
@@ -237,7 +249,7 @@ export default function Incidents() {
                 <TableBody>
                   {items.map((i) => (
                     <TableRow key={i.id} className={cn("cursor-pointer", i.resolution_status !== "resolved" && "bg-danger-soft/30")} onClick={() => setParams({ id: String(i.id) })}>
-                      <TableCell><p className="font-medium">{i.code}</p><p className="text-xs text-muted-foreground">{i.service_area_name}{i.scope === "meter" && " · single meter"}</p></TableCell>
+                      <TableCell><p className="font-medium">{i.code}</p><p className="text-xs text-muted-foreground">{i.service_area_name}{i.scope === "meter" && " · single meter"}{i.evidence_type === "communication_loss" && " · comms loss"}</p></TableCell>
                       <TableCell className="whitespace-nowrap text-sm">{formatDateTime(i.detected_at)}<p className="text-xs text-muted-foreground">{i.power_restored_at ? `lasted ${duration(i.first_evidence_at ?? i.detected_at, i.power_restored_at)}` : `ongoing ${duration(i.detected_at, null, now)}`}</p></TableCell>
                       <TableCell className="text-right tabular">{i.resolution_status === "resolved" ? i.peak_affected_meters : i.affected_meters}/{i.area_meter_count}</TableCell>
                       <TableCell className="text-right tabular">{i.estimated_customers}</TableCell>

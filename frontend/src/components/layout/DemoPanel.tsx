@@ -118,7 +118,10 @@ function ScenarioB({ close }: { close: () => void }) {
     return api.post("/simulation/outage", { scenario: "multi_meter_loss", service_area_id: area!.id });
   }, { success: "Voltage loss simulated in Sector D – Riverside" });
   const reading = useAction(() => api.post("/simulation/tick"), { success: "New meter readings collected" });
-  const confirm = useAction(() => api.post("/demo/advance", { minutes: 0.2 }), { success: "Verification period elapsed with persisting evidence" });
+  const confirm = useAction(async () => {
+    await api.post("/demo/advance", { minutes: 0.2 });
+    return api.post(`/incidents/${inc!.id}/confirm`, { notify_customers: true });
+  }, { success: "Outage verified by the operator; customer alert sent (simulated)" });
   const restore = useAction(() => api.post("/simulation/restore", { service_area_id: area!.id }), { success: "Power restored in Sector D" });
   const alertJob = inc?.verification_status === "confirmed";
   const supplyNormal = area && area.meters_no_supply === 0 && !area.sim_scenario;
@@ -135,8 +138,9 @@ function ScenarioB({ close }: { close: () => void }) {
         {!inc && <Button size="sm" variant="outline" disabled={since == null || reading.isPending} onClick={() => reading.mutate()}>Take another reading now</Button>}
         {inc && <p className="text-xs">{inc.code}: {inc.affected_meters}/{inc.area_meter_count} meters without supply · <b>{inc.verification_status}</b></p>}
       </Step>
-      <Step n={4} title="Additional readings confirm the outage" done={inc?.verification_status === "confirmed"} active={!!inc && inc.verification_status === "potential"}>
-        <Button size="sm" disabled={!inc || inc.verification_status !== "potential" || confirm.isPending} onClick={() => confirm.mutate()}>Collect confirming readings</Button>
+      <Step n={4} title="Additional readings persist; the operator verifies the outage" done={inc?.verification_status === "confirmed"} active={!!inc && inc.verification_status === "potential"}>
+        <p className="text-xs text-muted-foreground">Customers are only alerted after verification.</p>
+        <Button size="sm" disabled={!inc || inc.verification_status !== "potential" || confirm.isPending} onClick={() => confirm.mutate()}>Collect readings &amp; verify</Button>
       </Step>
       <Step n={5} title="Incident appears on the dashboard and a simulated WhatsApp alert is generated" done={!!alertJob} active={inc?.verification_status === "confirmed"}>
         <div className="flex flex-wrap gap-2">
