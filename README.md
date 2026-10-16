@@ -72,6 +72,11 @@ The database schema is created and upgraded automatically at startup by Alembic 
 
 Setup steps for the WhatsApp Cloud API and MPM: [docs/MPM_WHATSAPP_INTEGRATION.md](docs/MPM_WHATSAPP_INTEGRATION.md#5-configure-the-whatsapp-business-cloud-api).
 
+### Deploying
+
+The backend deploys to Render with the included Blueprint ([`render.yaml`](render.yaml)): a web service and a managed PostgreSQL database.
+Step-by-step guide, plan choices and constraints: [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md).
+
 ### Tests
 
 ```powershell

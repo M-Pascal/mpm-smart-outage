@@ -1,0 +1,75 @@
+# Render Blueprint for the PowerChat backend (FastAPI) and its PostgreSQL database.
+# Deploy: Render Dashboard > New > Blueprint > select this repository. See docs/DEPLOY_RENDER.md.
+services:
+  - type: web
+    name: powerchat-api
+    runtime: python
+    # Always-on plan: the reminder scheduler runs inside this process. The free plan spins down after
+    # 15 idle minutes, so scheduled WhatsApp reminders would only go out when someone next opens the app.
+    plan: 0.5c-512mb
+    region: frankfurt # closest Render region to East Africa; must match the database region
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Exactly one worker and one instance: the in-process scheduler must not run twice.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    numInstances: 1
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: DATABASE_URL
+        fromDatabase:
+          name: powerchat-db
+          property: connectionString
+      - key: RUN_SCHEDULER
+        value: "true"
+      - key: SCHEDULER_TICK_SECONDS
+        value: "3"
+      # true loads the fictional demo data on first start; set false for a production tenant.
+      - key: SEED_ON_STARTUP
+        value: "true"
+      # Origin(s) of the deployed frontend, comma-separated, e.g. https://powerchat-web.onrender.com
+      - key: CORS_ORIGINS
+        sync: false
+      # WhatsApp: mock until you explicitly enable live sending (see docs/MPM_WHATSAPP_INTEGRATION.md).
+      - key: WHATSAPP_MODE
+        value: mock
+      - key: WHATSAPP_LIVE_SEND_ENABLED
+        value: "false"
+      - key: WHATSAPP_API_VERSION
+        value: v26.0
+      - key: WHATSAPP_TEMPLATE_LANGUAGE
+        value: en
+      - key: WHATSAPP_VERIFY_TOKEN
+        generateValue: true
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: WHATSAPP_ALLOWED_RECIPIENTS
+        sync: false
+      # MicroPowerManager service account (leave empty until MPM access is set up).
+      - key: MPM_BASE_URL
+        sync: false
+      - key: MPM_EMAIL
+        sync: false
+      - key: MPM_PASSWORD
+        sync: false
+      - key: MPM_DEFAULT_COUNTRY_CODE
+        value: "250"
+      - key: TELEMETRY_API_KEY
+        generateValue: true
+
+databases:
+  - name: powerchat-db
+    # Paid plan: Render's free Postgres is deleted 30 days after creation and has no backups.
+    plan: 0.1c-256mb
+    region: frankfurt
+    databaseName: powerchat
+    user: powerchat
+    postgresMajorVersion: "17"

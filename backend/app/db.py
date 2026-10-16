@@ -1,7 +1,7 @@
 """Database engine and session handling.
 
-SQLite for local development and tests; MySQL (MPM's database engine) for
-deployment via DATABASE_URL=mysql+pymysql://... . The schema is managed by the
+SQLite for local development and tests; PostgreSQL (e.g. Render) or MySQL
+(MPM's database engine) for deployment via DATABASE_URL. The schema is managed by the
 Alembic migrations in backend/migrations and applied automatically at startup.
 """
 from __future__ import annotations
@@ -26,9 +26,15 @@ WRITE_LOCK = threading.RLock()
 
 class Database:
     def __init__(self, url: str) -> None:
+        from .config import normalize_database_url
+
+        url = normalize_database_url(url)
         kwargs: dict = {}
         if url.startswith("sqlite"):
             kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+        else:
+            # Managed databases close idle connections; check before use instead of failing a request.
+            kwargs["pool_pre_ping"] = True
         self.engine = create_engine(url, **kwargs)
         if url.startswith("sqlite"):
             @event.listens_for(self.engine, "connect")

@@ -39,6 +39,14 @@ def _load_dotenv() -> None:
         os.environ.setdefault(key, value)
 
 
+def normalize_database_url(url: str) -> str:
+    """Hosting platforms (e.g. Render) hand out postgres:// URLs; SQLAlchemy needs the psycopg (v3) driver named."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
 def _bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     return default if raw is None else raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -99,7 +107,7 @@ class Config:
         _load_dotenv()
         base = cls()
         return cls(
-            database_url=os.getenv("DATABASE_URL", base.database_url),
+            database_url=normalize_database_url(os.getenv("DATABASE_URL", base.database_url)),
             tick_seconds=float(os.getenv("SCHEDULER_TICK_SECONDS", base.tick_seconds)),
             run_scheduler=_bool("RUN_SCHEDULER", True),
             seed_on_startup=_bool("SEED_ON_STARTUP", True),
